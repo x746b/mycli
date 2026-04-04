@@ -16,7 +16,13 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
+authors = ["MyCLI Contributors"]
 license = "MIT"
+description = "Lightweight AI coding CLI"
+repository = ""
+homepage = ""
+keywords = ["ai", "agent", "coding", "llm", "cli"]
+categories = ["development-tools", "command-line-utilities"]
 
 [workspace.dependencies]
 # Async runtime
