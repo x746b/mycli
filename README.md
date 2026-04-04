@@ -56,7 +56,7 @@ mycli --cloud kimi "fix the test.rs"     # single-shot with Kimi K2.5
 
 ## Why
 
-Small local LLMs (7B–30B) can chat well but struggle with structured tool calling — wrong JSON, hallucinated tool names, broken edit strings. Larger cloud models handle it effortlessly. MyCLI allows test and compare across the spectrum by:
+Small local LLMs (7B–30B) can chat well but struggle with structured tool calling — wrong JSON, hallucinated tool names, broken edit strings. Larger cloud models handle it effortlessly. MyCLI allows testing and comparing them across the spectrum by:
 
 - Adjusting tool complexity to match model capability (`simple` / `medium` / `full`)
 - Hot-switching between local and cloud models mid-conversation
@@ -68,11 +68,9 @@ Small local LLMs (7B–30B) can chat well but struggle with structured tool call
 ## Install
 
 ```bash
-cd /opt/mycli
+git clone https://github.com/x746b/mycli && cd /opt/mycli
 cargo build --release
-# Binary at target/release/mycli
 ```
-
 Requires Rust 1.85+, OpenSSL dev libraries (`libssl-dev` / `openssl-devel`).
 
 ---
@@ -129,6 +127,15 @@ Environment variables (`MYCLI_MODEL`, `MYCLI_API_KEY`, `MOONSHOT_API_KEY`, `DEEP
 
 ## Usage
 
+### oMLX backend
+
+```bash
+omlx serve --model-dir ~/models --paged-ssd-cache-dir ~/.omlx/cache --port 8000
+oMLX - LLM inference, optimized for your Mac
+├─ https://github.com/jundot/omlx
+└─ Version: 0.2.21
+```
+
 ### REPL
 
 ```bash
@@ -141,7 +148,7 @@ mycli -t simple           # minimal tools for small models
 ### Single-shot
 
 ```bash
-mycli "fix the failing tests"
+mycli "find the error the ./test.rs and fix it"
 mycli --cloud deepseek -y "refactor main.rs"   # auto-approve tools
 ```
 
