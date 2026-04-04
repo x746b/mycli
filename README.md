@@ -2,12 +2,43 @@
 
 Lightweight AI coding CLI for testing LLM capabilities — especially local models running on [oMLX](https://github.com/jundot/omlx). Cloud providers (Kimi K2.5, DeepSeek, Gemini, OpenAI) supported as first-class fallback.
 
-Built to answer a simple question: **how well can a given LLM actually use tools?**
+```bash
+$ mycli
+  tools [medium]: Read, Write, Bash, Edit, Glob, Grep
+
+                   _____ _     __ 
+                  / ____| |   /_ |
+  _ __ ___  _   _| |    | |    | |
+ | '_ ` _ \| | | | |    | |    | |
+ | | | | | | |_| | |____| |____| |
+ |_| |_| |_|\__, |\_____|______|_|
+             __/ |                
+            |___/                       
+             
+  omlx | Qwen3.5-27B-Claude-4.6-Opus-Distilled-MLX-4bit | tools:medium | max_turns:30
+  Type /help for commands, Ctrl+C to cancel, Ctrl+D to exit
+
+> /help
+Commands:
+  /help              Show this help
+  /model             Pick local oMLX model
+  /model <name>      Switch to a local model
+  /cloud             Pick cloud provider
+  /cloud <name>      Switch to cloud (e.g. kimi, deepseek)
+  /local             Switch back to oMLX
+  /tools             Show active tool tier
+  /tools <tier>      Switch tier (simple/medium/full)
+  /mcp               Show MCP server status
+  /clear             Clear screen
+  /exit              Exit mycli
+
+```
+
 
 ```bash
-mycli                              # REPL with local oMLX model
-mycli -t simple -m RedSage-8B     # test a 8B model with minimal tools
-mycli --cloud kimi "fix the tests" # single-shot with Kimi K2.5
+mycli                                    # REPL with local oMLX model
+mycli -t simple -m RedSage-8B-8bit       # test a 8B model with minimal tools
+mycli --cloud kimi "fix the test.rs"     # single-shot with Kimi K2.5
 ```
 
 **5MB static binary** | **Rust** | **34 tools** | **3 tool tiers** | **MCP support** | **Hot-swappable models & providers**
