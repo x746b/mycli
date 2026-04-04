@@ -146,16 +146,27 @@ impl Renderer {
 
 /// Print banner on startup
 pub fn banner(config: &crate::config::Config, model_display: &str) {
+    let logo = r#"
+                   _____ _     __ 
+                  / ____| |   /_ |
+  _ __ ___  _   _| |    | |    | |
+ | '_ ` _ \| | | | |    | |    | |
+ | | | | | | |_| | |____| |____| |
+ |_| |_| |_|\__, |\_____|______|_|
+             __/ |                
+            |___/                       
+             "#;
+
     let _ = execute!(
         io::stderr(),
         SetForegroundColor(ACCENT),
         SetAttribute(Attribute::Bold),
-        Print("mycli"),
+        Print(logo),
         ResetColor,
+        Print("\n"),
         SetForegroundColor(DIM),
         Print(format!(
-            " v{} | {} | {} | tools:{} | max_turns:{}",
-            env!("CARGO_PKG_VERSION"),
+            "  {} | {} | tools:{} | max_turns:{}",
             config.provider,
             model_display,
             crate::config::resolve_tool_tier(config),
@@ -164,7 +175,7 @@ pub fn banner(config: &crate::config::Config, model_display: &str) {
         ResetColor,
         Print("\n"),
         SetForegroundColor(DIM),
-        Print("Type /help for commands, Ctrl+C to cancel, Ctrl+D to exit"),
+        Print("  Type /help for commands, Ctrl+C to cancel, Ctrl+D to exit"),
         ResetColor,
         Print("\n\n"),
     );
