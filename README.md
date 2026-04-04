@@ -32,8 +32,17 @@ Commands:
   /clear             Clear screen
   /exit              Exit mycli
 
-```
+> hey
+  thinking... 
 
+hey! 👋 I'm your coding assistant. I can help you with:
+
+- Reading and writing files
+- Running shell commands (git, builds, tests, etc.)
+- Debugging code
+- Writing new features
+- And more!
+```
 
 ```bash
 mycli                                    # REPL with local oMLX model
@@ -47,7 +56,7 @@ mycli --cloud kimi "fix the test.rs"     # single-shot with Kimi K2.5
 
 ## Why
 
-Small local LLMs (7B–30B) can chat well but struggle with structured tool calling — wrong JSON, hallucinated tool names, broken edit strings. Larger cloud models handle it effortlessly. MyCLI lets you test and compare across the spectrum by:
+Small local LLMs (7B–30B) can chat well but struggle with structured tool calling — wrong JSON, hallucinated tool names, broken edit strings. Larger cloud models handle it effortlessly. MyCLI allows test and compare across the spectrum by:
 
 - Adjusting tool complexity to match model capability (`simple` / `medium` / `full`)
 - Hot-switching between local and cloud models mid-conversation
