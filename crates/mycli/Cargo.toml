@@ -1,0 +1,52 @@
+[package]
+name = "mycli"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Lightweight AI coding CLI — local-first (oMLX), cloud-ready (Kimi, DeepSeek)"
+
+[[bin]]
+name = "mycli"
+path = "src/main.rs"
+
+[dependencies]
+# Cersei SDK
+cersei = { path = "../cersei" }
+cersei-types = { path = "../cersei-types" }
+cersei-provider = { path = "../cersei-provider" }
+cersei-tools = { path = "../cersei-tools" }
+cersei-agent = { path = "../cersei-agent" }
+cersei-memory = { path = "../cersei-memory" }
+cersei-hooks = { path = "../cersei-hooks" }
+cersei-mcp = { path = "../cersei-mcp" }
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Terminal
+crossterm = "0.28"
+termimad = "0.30"
+
+# Input
+rustyline = "15"
+
+# Config
+toml = { workspace = true }
+dirs = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+reqwest = { version = "0.12", features = ["json", "blocking", "native-tls"], default-features = false }
+
+# Async
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+
+# Utilities
+uuid = { workspace = true }
+chrono = { workspace = true }
+anyhow = { workspace = true }
+parking_lot = { workspace = true }
+async-trait = { workspace = true }
+ctrlc = "3"
