@@ -1,0 +1,258 @@
+# MyCLI
+
+Lightweight AI coding CLI for testing LLM capabilities — especially local models running on [oMLX](https://github.com/jundot/omlx). Cloud providers (Kimi K2.5, DeepSeek, Gemini, OpenAI) supported as first-class fallback.
+
+Built to answer a simple question: **how well can a given LLM actually use tools?**
+
+```bash
+mycli                              # REPL with local oMLX model
+mycli -t simple -m RedSage-8B     # test a 8B model with minimal tools
+mycli --cloud kimi "fix the tests" # single-shot with Kimi K2.5
+```
+
+**5MB static binary** | **Rust** | **34 tools** | **3 tool tiers** | **MCP support** | **Hot-swappable models & providers**
+
+---
+
+## Why
+
+Small local LLMs (7B–30B) can chat well but struggle with structured tool calling — wrong JSON, hallucinated tool names, broken edit strings. Larger cloud models handle it effortlessly. MyCLI lets you test and compare across the spectrum by:
+
+- Adjusting tool complexity to match model capability (`simple` / `medium` / `full`)
+- Hot-switching between local and cloud models mid-conversation
+- Providing fuzzy edit matching and line-range edits that tolerate local model mistakes
+- Keeping the system prompt lean and tier-appropriate — small models only see tools they can use
+
+---
+
+## Install
+
+```bash
+cd /opt/mycli
+cargo build --release
+# Binary at target/release/mycli
+```
+
+Requires Rust 1.85+, OpenSSL dev libraries (`libssl-dev` / `openssl-devel`).
+
+---
+
+## Configuration
+
+Config lives in `~/.mycli/config.toml` (global) and `.mycli/config.toml` (project-level).
+
+```toml
+# ─── Local (oMLX) ──────────────────────────────────────────
+api_key = "your-omlx-key"
+# base_url defaults to http://127.0.0.1:8000/v1
+
+# ─── Tool tier ─────────────────────────────────────────────
+# tool_tier = "auto"       # auto = medium for local, full for cloud
+# cost_limit = 1.0         # stop agent after $1 cloud spend (0 = unlimited)
+
+# ─── MCP servers ───────────────────────────────────────────
+[[mcp]]
+name = "my-server"
+command = "/path/to/venv/bin/python"
+args = ["-m", "my_mcp.server"]
+
+# ─── Cloud models ──────────────────────────────────────────
+[cloud.kimi]
+api_key = "sk-..."
+model = "kimi-k2.5"
+
+[cloud.kimi-think]
+api_key = "sk-..."
+model = "kimi-k2.5"
+max_tokens = 32768
+
+[cloud.deepseek]
+api_key = "sk-..."
+model = "deepseek-chat"
+
+[cloud.deepseek-think]
+api_key = "sk-..."
+model = "deepseek-reasoner"
+
+[cloud.gemini]
+api_key = "AI..."
+model = "gemini-3.1-pro-preview"
+
+[cloud.openai]
+api_key = "sk-..."
+model = "gpt-4o"
+```
+
+Environment variables (`MYCLI_MODEL`, `MYCLI_API_KEY`, `MOONSHOT_API_KEY`, `DEEPSEEK_API_KEY`, `GEMINI_API_KEY`, `OPENAI_API_KEY`) are also supported.
+
+---
+
+## Usage
+
+### REPL
+
+```bash
+mycli                     # auto-detect local oMLX model
+mycli -m Qwen3-30B        # specific local model
+mycli --cloud kimi        # start with Kimi K2.5
+mycli -t simple           # minimal tools for small models
+```
+
+### Single-shot
+
+```bash
+mycli "fix the failing tests"
+mycli --cloud deepseek -y "refactor main.rs"   # auto-approve tools
+```
+
+### CLI flags
+
+| Flag | Description |
+|------|-------------|
+| `-m, --model` | Model name (oMLX model ID or cloud model) |
+| `--cloud <name>` | Use cloud provider (kimi, deepseek, gemini, openai, or config profile) |
+| `-t, --tools <tier>` | Tool tier: `simple`, `medium`, `full`, or `auto` (default) |
+| `-y, --yes` | Auto-approve all tool permissions |
+| `--max-turns` | Max agent turns per prompt (default: 30) |
+| `-C, --directory` | Working directory |
+| `--show-config` | Print resolved config and exit |
+
+---
+
+## REPL Commands
+
+| Command | Description |
+|---------|-------------|
+| `/help` | Show all commands |
+| `/model` | Interactive local model picker (arrow keys) |
+| `/model <name>` | Switch to a local oMLX model |
+| `/cloud` | Interactive cloud provider picker |
+| `/cloud <name>` | Switch to cloud (e.g. `kimi`, `deepseek`, `gemini`) |
+| `/local` | Switch back to oMLX |
+| `/tools` | Show active tool tier and loaded tools |
+| `/tools <tier>` | Switch tier (`simple` / `medium` / `full`) |
+| `/mcp` | Show MCP server status |
+| `/clear` | Clear screen |
+| `/exit` | Exit |
+
+All switches are hot — model, provider, and tool tier can change mid-session without restarting.
+
+---
+
+## Tool Tiers
+
+Designed to match tool complexity to model capability:
+
+| Tier | Tools | Best for |
+|------|-------|----------|
+| **simple** | Read, Write, Bash | 7B–8B models — minimal surface, hard to mess up |
+| **medium** | + Edit, Glob, Grep | 24B–30B models — structured tools, fuzzy matching helps |
+| **full** | + WebFetch, Skills, MCP tools | Cloud models (Kimi, DeepSeek, Gemini) — full power |
+
+**Auto-detection:** local providers default to `medium`, cloud defaults to `full`.
+
+The system prompt adapts to the tier — small models only see descriptions of tools they actually have access to.
+
+---
+
+## Features
+
+### Provider Support
+- **oMLX** (local) — auto-detects loaded models, interactive picker
+- **Kimi K2.5** — with and without thinking mode
+- **DeepSeek** — chat and reasoner models
+- **Google Gemini** — via AI Studio OpenAI-compatible endpoint
+- **OpenAI** — GPT-4o and compatible
+- Any OpenAI-compatible endpoint via `--base-url`
+
+### Tool Capabilities
+- **Filesystem:** Read, Write, Edit (with fuzzy matching + line-range mode), Glob, Grep
+- **Shell:** Bash execution with permission control
+- **Web:** WebFetch for reading URLs/documentation
+- **Skills:** Bundled prompt templates (commit, review, debug, simplify, etc.)
+- **MCP:** Connect to any MCP server — tools auto-discovered and injected
+
+### Edit Tool Resilience
+Local models often get `old_string` wrong in edit operations. MyCLI handles this with:
+- **Fuzzy matching** — normalizes whitespace and indentation before matching
+- **Line-range mode** — `start_line`/`end_line` as an alternative to exact string matching
+- **Helpful errors** — shows what the model tried to match, suggests line-range mode
+
+### Interactive UI
+- Arrow-key model picker for oMLX and cloud providers
+- Arrow-key/Tab permission dialog (Yes / No / Session-allow)
+- Streaming markdown rendering
+- Thinking indicator for reasoning models
+- Ctrl+C to cancel, double Ctrl+C to force exit
+
+### Safety
+- **Permission system** — interactive approval for write/execute operations, or `-y` to auto-approve
+- **Cost guard hook** — set `cost_limit` in config to cap cloud API spend per session
+- **Tool tiers** — limit what tools the model can access
+
+---
+
+## Built-in Cloud Presets
+
+| Name | Provider | Default Model | Max Tokens |
+|------|----------|---------------|------------|
+| `kimi` | Moonshot AI | kimi-k2.5 | 16,384 |
+| `kimi-think` | Moonshot AI | kimi-k2.5 | 32,768 |
+| `deepseek` | DeepSeek | deepseek-chat | 8,192 |
+| `deepseek-think` | DeepSeek | deepseek-reasoner | 8,192 |
+| `gemini` | Google AI Studio | gemini-3.1-pro-preview | 65,536 |
+| `openai` | OpenAI | gpt-4o | 16,384 |
+
+Presets provide base URL, default model, and max tokens automatically. Just add your API key.
+
+---
+
+## MCP (Model Context Protocol)
+
+MyCLI connects to MCP servers over stdio transport. Tools are auto-discovered at startup when using the `full` tool tier.
+
+```toml
+# ~/.mycli/config.toml
+[[mcp]]
+name = "my-tools"
+command = "npx"
+args = ["-y", "@company/mcp-server"]
+env = { API_TOKEN = "..." }
+```
+
+Use `/mcp` in the REPL to see connected servers and their status.
+
+---
+
+## Architecture
+
+MyCLI is built on the [Cersei SDK](https://github.com/pacifio/cersei) — a modular Rust SDK for building coding agents.
+
+```
+mycli (CLI binary)
+  └── cersei SDK
+      ├── cersei-types       Provider-agnostic types
+      ├── cersei-provider    OpenAI-compatible provider (oMLX, Kimi, DeepSeek, etc.)
+      ├── cersei-tools       34 built-in tools, permissions, skills
+      ├── cersei-agent       Agent builder, agentic loop, auto-compact
+      ├── cersei-memory      Memory manager (flat files, CLAUDE.md)
+      ├── cersei-hooks       Hook/middleware system
+      └── cersei-mcp         MCP client (JSON-RPC 2.0, stdio)
+```
+
+---
+
+## Acknowledgments
+
+MyCLI is built on top of the **[Cersei SDK](https://github.com/pacifio/cersei)** by [Adib Mohsin](https://github.com/pacifio). Cersei provides the complete foundation — the agent loop, tool execution, provider abstraction, memory system, MCP client, and more. Without this excellent SDK, MyCLI would not exist. Thank you for building it and making it open source.
+
+Fixes and enhancements made to the SDK as part of MyCLI development:
+- OpenAI-compatible provider: tool call streaming, message round-trips, thinking mode (`reasoning_content`)
+- Edit tool: fuzzy whitespace matching, line-range editing mode
+- MCP client: JSON-RPC 2.0 notification compliance
+
+---
+
+## License
+
+MIT
