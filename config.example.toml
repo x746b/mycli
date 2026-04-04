@@ -1,0 +1,56 @@
+# ─── Local (oMLX) ──────────────────────────────────────────
+# API key for your oMLX server (http://127.0.0.1:8000)
+api_key = "omlx-xxxxxxxxxxxxxxxxxxxx"
+
+# Uncomment to override defaults:
+# base_url = "http://127.0.0.1:8000/v1"
+# model = ""              # empty = auto-detect first loaded model
+# max_turns = 30
+# max_tokens = 16384
+# tool_tier = "auto"      # auto | simple | medium | full
+# cost_limit = 0.0        # USD per session, 0 = unlimited
+
+# ─── MCP servers ───────────────────────────────────────────
+# Tools auto-discovered on startup (full tier only)
+# Add as many [[mcp]] blocks as you need
+
+[[mcp]]
+name = "mac-forensics"
+command = "/opt/mac_forensics-mcp/.venv/bin/python"
+args = ["-m", "mac_forensics_mcp.server"]
+
+# [[mcp]]
+# name = "github"
+# command = "npx"
+# args = ["-y", "@modelcontextprotocol/server-github"]
+# env = { GITHUB_TOKEN = "ghp_xxxxxxxxxxxx" }
+
+# ─── Cloud models ──────────────────────────────────────────
+# Usage: mycli --cloud kimi  OR  /cloud kimi  in REPL
+# Built-in presets provide base_url automatically.
+# You can also define custom profiles with any base_url.
+
+[cloud.kimi]
+api_key = "sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+model = "kimi-k2.5"
+
+[cloud.kimi-think]
+api_key = "sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+model = "kimi-k2.5"
+max_tokens = 32768
+
+[cloud.deepseek]
+api_key = "sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+model = "deepseek-chat"
+
+[cloud.deepseek-think]
+api_key = "sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+model = "deepseek-reasoner"
+
+[cloud.gemini]
+api_key = "AIzaXxXxXxXxXxXxXxXxXxXxXxXxXxXxXxXxXxX"
+model = "gemini-3.1-pro-preview"
+
+[cloud.openai]
+api_key = "sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+model = "gpt-4o"
