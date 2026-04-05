@@ -94,15 +94,27 @@ pub fn estimate_messages_tokens(messages: &[Message]) -> u64 {
 /// Get context window size for a model.
 pub fn context_window_for_model(model: &str) -> u64 {
     match model {
+        // Anthropic
         m if m.contains("opus") => 200_000,
         m if m.contains("sonnet") => 200_000,
         m if m.contains("haiku") => 200_000,
+        // OpenAI
         m if m.contains("gpt-4o") => 128_000,
         m if m.contains("gpt-4-turbo") => 128_000,
         m if m.contains("gpt-4") => 8_192,
         m if m.contains("gpt-3.5") => 16_385,
+        m if m.contains("o1") || m.contains("o3") || m.contains("o4") => 200_000,
+        // Google
+        m if m.contains("gemini") => 1_000_000,
+        // Kimi / Moonshot
+        m if m.contains("kimi") || m.contains("moonshot") => 128_000,
+        // DeepSeek
+        m if m.contains("deepseek") => 64_000,
+        // Local / small
         m if m.contains("llama") => 8_192,
-        _ => 200_000, // default to large
+        m if m.contains("qwen") => 32_768,
+        m if m.contains("mistral") => 32_768,
+        _ => 32_768, // sensible default for local models
     }
 }
 

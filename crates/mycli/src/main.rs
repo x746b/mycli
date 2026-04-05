@@ -48,6 +48,10 @@ pub struct Cli {
     #[arg(long, short = 'y')]
     pub yes: bool,
 
+    /// Persona: code (default), redteam, blueteam, data
+    #[arg(long, short = 'p', value_name = "PERSONA")]
+    pub persona: Option<String>,
+
     /// Working directory override
     #[arg(short = 'C', long)]
     pub directory: Option<String>,

@@ -3,6 +3,7 @@
 use crossterm::style::{Attribute, Color, Print, ResetColor, SetAttribute, SetForegroundColor};
 use crossterm::execute;
 use std::io::{self, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 const DIM: Color = Color::DarkGrey;
@@ -14,6 +15,9 @@ const TOOL_BADGE: Color = Color::Magenta;
 pub struct Renderer {
     buffer: String,
     in_thinking: bool,
+    in_tool: bool,
+    /// When set, output is paused (permission prompt is active).
+    pub pause_flag: Option<&'static AtomicBool>,
 }
 
 impl Renderer {
@@ -21,10 +25,22 @@ impl Renderer {
         Self {
             buffer: String::new(),
             in_thinking: false,
+            in_tool: false,
+            pause_flag: None,
         }
     }
 
+    /// Check if output should be paused (permission prompt active).
+    fn is_paused(&self) -> bool {
+        self.pause_flag
+            .map(|f| f.load(Ordering::SeqCst))
+            .unwrap_or(false)
+    }
+
     pub fn push_text(&mut self, delta: &str) {
+        if self.is_paused() || self.in_tool {
+            return; // Drop text while permission prompt or tool execution is active
+        }
         if self.in_thinking {
             self.end_thinking();
         }
@@ -50,11 +66,19 @@ impl Renderer {
     }
 
     pub fn tool_start(&mut self, name: &str, input: &serde_json::Value) {
+        self.in_tool = true;
+        // Wait for permission prompt to finish before rendering
+        while self.is_paused() {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
         self.flush();
+        // Ensure we start at column 0 on a fresh line
+        let _ = io::stdout().flush();
+        let _ = io::stderr().flush();
         let summary = tool_summary(name, input);
         let _ = execute!(
             io::stderr(),
-            Print("\n"),
+            Print("\r\n"),
             SetForegroundColor(TOOL_BADGE),
             SetAttribute(Attribute::Bold),
             Print(format!("  [{name}]")),
@@ -62,11 +86,12 @@ impl Renderer {
             SetForegroundColor(DIM),
             Print(format!(" {summary}")),
             ResetColor,
-            Print("\n"),
+            Print("\r\n"),
         );
     }
 
     pub fn tool_end(&mut self, name: &str, result: &str, is_error: bool, duration: Duration) {
+        self.in_tool = false;
         let (color, icon) = if is_error { (ERROR, "x") } else { (SUCCESS, "+") };
         let ms = duration.as_millis();
         let _ = execute!(
