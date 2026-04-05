@@ -33,17 +33,43 @@ Commands:
   /mcp               Show MCP server status
   /clear             Clear screen
   /exit              Exit mycli
+```
 
+```bash
 > hey
-  thinking... 
+  thinking...
 
-hey! 👋 I'm your coding assistant. I can help you with:
+Hey! Ready to help you with offensive security operations.
 
-- Reading and writing files
-- Running shell commands (git, builds, tests, etc.)
-- Debugging code
-- Writing new features
-- And more!
+I can assist with:
+
+- Reconnaissance - Port scanning, service enumeration, subdomain discovery, target mapping
+- Exploitation - CVE analysis, exploit development, RCE/SRFI/SSRF/LFI/SQLi payloads
+- Privilege Escalation - Kernel exploits, SUID abuse, capability manipulation, scheduled tasks
+- Lateral Movement - Pass-the-Hash, credential dumping, SMB/WinRM pivoting
+- Post-Exploitation - Persistence, credential harvesting, lateral reconnaissance
+- CTF Challenges - Walkthroughs, solve scripts, flag extraction
+- Vulnerability Research - Static/dynamic analysis, PoC development
+
+What are you working on today?
+
+>
+Qwen3.5-27B-MLX-8bit | omlx | redteam | ctx:3% | in:1.1k out:229 | ~/labs/tmp
+```
+
+```bash
+> /tools
+  Select tool tier: (↑↓ select, Enter confirm, Esc cancel)
+    simple
+  ▸ medium (active)
+    full
+
+> /persona
+  Select persona: (↑↓ select, Enter confirm, Esc cancel)
+    code
+  ▸ redteam (active)
+    blueteam
+    data analyst
 ```
 
 ```bash
@@ -53,7 +79,7 @@ mycli --cloud kimi "fix the test.rs"     # single-shot with Kimi K2.5
 mycli -p redteam --cloud deepseek        # offensive security persona
 ```
 
-**5MB static binary** | **Rust** | **34 tools** | **3 tool tiers** | **4 personas** | **MCP support** | **Hot-swappable models & providers**
+** < 5MB static binary** | **Rust** | **34 tools** | **3 tool tiers** | **4 personas** | **MCP support** | **Hot-swappable models & providers**
 
 ---
 
@@ -336,7 +362,8 @@ mycli (CLI binary)
 
 ## Acknowledgments
 
-MyCLI is built on top of the **[Cersei SDK](https://github.com/pacifio/cersei)** by [Adib Mohsin](https://github.com/pacifio). Cersei provides the complete foundation — the agent loop, tool execution, provider abstraction, memory system, MCP client, and more. Without this excellent SDK, MyCLI would not exist. Thank you for building it and making it open source.
+MyCLI is built on top of the **[Cersei SDK](https://github.com/pacifio/cersei)** by [Adib Mohsin](https://github.com/pacifio). 
+Cersei provides the foundation — the agent loop, tool execution, provider abstraction, memory system, MCP client, and more. Without this SDK, MyCLI would not exist. Thank you.
 
 Fixes and enhancements made to the SDK as part of MyCLI development:
 - OpenAI-compatible provider: tool call streaming, message round-trips, thinking mode (`reasoning_content`)
