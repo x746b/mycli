@@ -251,6 +251,7 @@ impl Provider for OpenAi {
             "messages": api_messages,
             "max_tokens": request.max_tokens,
             "stream": true,
+            "stream_options": { "include_usage": true },
         });
 
         if let Some(temp) = request.temperature {

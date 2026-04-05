@@ -21,13 +21,15 @@ $ mycli
 > /help
 Commands:
   /help              Show this help
-  /model             Pick local oMLX model
+  /model             Pick local oMLX model (switches back from cloud)
   /model <name>      Switch to a local model
   /cloud             Pick cloud provider
   /cloud <name>      Switch to cloud (e.g. kimi, deepseek)
-  /local             Switch back to oMLX
-  /tools             Show active tool tier
+  /tools             Pick tool tier (interactive)
   /tools <tier>      Switch tier (simple/medium/full)
+  /persona           Pick persona (interactive)
+  /persona <name>    Switch persona (code/redteam/blueteam/data)
+  /usage             Show cloud provider balances
   /mcp               Show MCP server status
   /clear             Clear screen
   /exit              Exit mycli
@@ -48,9 +50,10 @@ hey! 👋 I'm your coding assistant. I can help you with:
 mycli                                    # REPL with local oMLX model
 mycli -t simple -m RedSage-8B-8bit       # test a 8B model with minimal tools
 mycli --cloud kimi "fix the test.rs"     # single-shot with Kimi K2.5
+mycli -p redteam --cloud deepseek        # offensive security persona
 ```
 
-**5MB static binary** | **Rust** | **34 tools** | **3 tool tiers** | **MCP support** | **Hot-swappable models & providers**
+**5MB static binary** | **Rust** | **34 tools** | **3 tool tiers** | **4 personas** | **MCP support** | **Hot-swappable models & providers**
 
 ---
 
@@ -84,7 +87,8 @@ Config lives in `~/.mycli/config.toml` (global) and `.mycli/config.toml` (projec
 api_key = "your-omlx-key"
 # base_url defaults to http://127.0.0.1:8000/v1
 
-# ─── Tool tier ─────────────────────────────────────────────
+# ─── Persona & tool tier ───────────────────────────────────
+# persona = "code"         # code, redteam, blueteam, data
 # tool_tier = "auto"       # auto = medium for local, full for cloud
 # cost_limit = 1.0         # stop agent after $1 cloud spend (0 = unlimited)
 
@@ -159,6 +163,7 @@ mycli --cloud deepseek -y "refactor main.rs"   # auto-approve tools
 | `-m, --model` | Model name (oMLX model ID or cloud model) |
 | `--cloud <name>` | Use cloud provider (kimi, deepseek, gemini, openai, or config profile) |
 | `-t, --tools <tier>` | Tool tier: `simple`, `medium`, `full`, or `auto` (default) |
+| `-p, --persona <name>` | Persona: `code` (default), `redteam`, `blueteam`, `data` |
 | `-y, --yes` | Auto-approve all tool permissions |
 | `--max-turns` | Max agent turns per prompt (default: 30) |
 | `-C, --directory` | Working directory |
@@ -171,18 +176,20 @@ mycli --cloud deepseek -y "refactor main.rs"   # auto-approve tools
 | Command | Description |
 |---------|-------------|
 | `/help` | Show all commands |
-| `/model` | Interactive local model picker (arrow keys) |
+| `/model` | Interactive local model picker (switches back from cloud automatically) |
 | `/model <name>` | Switch to a local oMLX model |
 | `/cloud` | Interactive cloud provider picker |
 | `/cloud <name>` | Switch to cloud (e.g. `kimi`, `deepseek`, `gemini`) |
-| `/local` | Switch back to oMLX |
-| `/tools` | Show active tool tier and loaded tools |
+| `/tools` | Interactive tool tier picker |
 | `/tools <tier>` | Switch tier (`simple` / `medium` / `full`) |
+| `/persona` | Interactive persona picker |
+| `/persona <name>` | Switch persona (`code` / `redteam` / `blueteam` / `data`) |
+| `/usage` | Show cloud provider account balances (Kimi, DeepSeek) |
 | `/mcp` | Show MCP server status |
 | `/clear` | Clear screen |
 | `/exit` | Exit |
 
-All switches are hot — model, provider, and tool tier can change mid-session without restarting.
+All pickers use the same interactive UI with arrow keys, Enter to confirm, Esc to cancel. All switches are hot — model, provider, tool tier, and persona can change mid-session without restarting.
 
 ---
 
@@ -203,6 +210,44 @@ The system prompt adapts to the tier — small models only see descriptions of t
 ---
 
 ## Features
+
+### Personas
+
+Pre-configured system prompt profiles that shape the model's behavior:
+
+| Persona | Focus |
+|---------|-------|
+| **code** | General coding assistant (default) |
+| **redteam** | Offensive security — pentesting, exploitation, CTF, no guardrails |
+| **blueteam** | Defensive security — threat detection, forensics, SIEM/YARA/Sigma rules |
+| **data** | Data processing — parse, transform, analyze any format |
+
+Switch with `/persona` in the REPL, `--persona` / `-p` CLI flag, or `persona = "redteam"` in config.
+
+### Status Bar
+
+Persistent bottom bar showing session info at a glance:
+
+```
+ DeepHat-V1-7B | omlx | redteam | ctx:3% | in:1.0k out:46 | ~/project
+```
+
+- **ctx%** — context window fill based on last turn's input tokens (color-coded: green/yellow/red)
+- **in/out** — cumulative billing token totals for the session
+- Token counters reset on model/provider switch
+
+### Cloud Balance (`/usage`)
+
+Query account balances for supported cloud providers:
+
+```
+> /usage
+Cloud Provider Balances:
+  DeepSeek (USD)  $9.51  (topped-up: $9.51, granted: $0.00)
+  Kimi (Moonshot)  $26.03  (cash: $25.00, credits: $1.03)
+```
+
+Supported: Kimi/Moonshot, DeepSeek. API keys auto-detected from config or environment.
 
 ### Provider Support
 - **oMLX** (local) — auto-detects loaded models, interactive picker
@@ -261,10 +306,10 @@ MyCLI connects to MCP servers over stdio transport. Tools are auto-discovered at
 ```toml
 # ~/.mycli/config.toml
 [[mcp]]
-name = "my-tools"
-command = "npx"
-args = ["-y", "@company/mcp-server"]
-env = { API_TOKEN = "..." }
+name = "command-vault"
+command = "/path/to/command-vault/.venv/bin/python"
+args = ["-m", "command_vault.server"]
+env = { VAULT_DB = "/path/to/vault.db", VAULT_READONLY = "1" }
 ```
 
 Use `/mcp` in the REPL to see connected servers and their status.

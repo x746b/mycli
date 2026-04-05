@@ -92,9 +92,16 @@ pub struct Config {
     /// Named cloud provider profiles
     #[serde(default)]
     pub cloud: HashMap<String, CloudProfile>,
+    /// Active persona: "code", "redteam", "blueteam", "data"
+    #[serde(default = "default_persona")]
+    pub persona: String,
     /// Working directory (not serialized)
     #[serde(skip)]
     pub working_dir: PathBuf,
+}
+
+fn default_persona() -> String {
+    "code".into()
 }
 
 impl Default for Config {
@@ -111,6 +118,7 @@ impl Default for Config {
             cost_limit: 0.0,
             mcp: Vec::new(),
             cloud: HashMap::new(),
+            persona: "code".into(),
             working_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
         }
     }
@@ -383,6 +391,9 @@ pub fn apply_cli_overrides(cli: &Cli, config: &mut Config) {
     }
     if let Some(tier) = &cli.tools {
         config.tool_tier = tier.clone();
+    }
+    if let Some(p) = &cli.persona {
+        config.persona = p.clone();
     }
 }
 

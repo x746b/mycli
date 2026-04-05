@@ -8,16 +8,18 @@ api_key = "omlx-xxxxxxxxxxxxxxxxxxxx"
 # max_turns = 30
 # max_tokens = 16384
 # tool_tier = "auto"      # auto | simple | medium | full
+# persona = "code"        # code | redteam | blueteam | data
 # cost_limit = 0.0        # USD per session, 0 = unlimited
 
 # ─── MCP servers ───────────────────────────────────────────
 # Tools auto-discovered on startup (full tier only)
 # Add as many [[mcp]] blocks as you need
 
-[[mcp]]
-name = "mac-forensics"
-command = "/opt/mac_forensics-mcp/.venv/bin/python"
-args = ["-m", "mac_forensics_mcp.server"]
+# [[mcp]]
+# name = "command-vault"
+# command = "/path/to/command-vault/.venv/bin/python"
+# args = ["-m", "command_vault.server"]
+# env = { VAULT_DB = "/path/to/vault.db", VAULT_READONLY = "1" }
 
 # [[mcp]]
 # name = "github"
