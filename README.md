@@ -36,13 +36,27 @@ Commands:
 ```
 
 ```bash
+> /tools
+  Select tool tier: (↑↓ select, Enter confirm, Esc cancel)
+    simple
+    medium
+  ▸ full (active)
+
+tools [full]: Read, Write, Bash, Edit, Glob, Grep, WebFetch, Skill, <MCP tools>
+
+> /persona
+  Select persona: (↑↓ select, Enter confirm, Esc cancel)
+    code
+  ▸ redteam (active)
+    blueteam
+    data
+
 > hey
   thinking...
 
 Hey! Ready to help you with offensive security operations.
 
 I can assist with:
-
 - Reconnaissance - Port scanning, service enumeration, subdomain discovery, target mapping
 - Exploitation - CVE analysis, exploit development, RCE/SRFI/SSRF/LFI/SQLi payloads
 - Privilege Escalation - Kernel exploits, SUID abuse, capability manipulation, scheduled tasks
@@ -54,21 +68,6 @@ What are you working on today?
 
 >
 gemma-4-31b-it-4bit | omlx | redteam | ctx:3% | in:1.1k out:229 | ~/labs/tmp
-```
-
-```bash
-> /tools
-  Select tool tier: (↑↓ select, Enter confirm, Esc cancel)
-    simple
-  ▸ medium (active)
-    full
-
-> /persona
-  Select persona: (↑↓ select, Enter confirm, Esc cancel)
-    code
-  ▸ redteam (active)
-    blueteam
-    data analyst
 ```
 
 ```bash
