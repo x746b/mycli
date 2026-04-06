@@ -53,7 +53,7 @@ I can assist with:
 What are you working on today?
 
 >
-Qwen3.5-27B-MLX-8bit | omlx | redteam | ctx:3% | in:1.1k out:229 | ~/labs/tmp
+gemma-4-31b-it-4bit | omlx | redteam | ctx:3% | in:1.1k out:229 | ~/labs/tmp
 ```
 
 ```bash
@@ -72,13 +72,14 @@ Qwen3.5-27B-MLX-8bit | omlx | redteam | ctx:3% | in:1.1k out:229 | ~/labs/tmp
 ```
 
 ```bash
-mycli                                    # REPL with local oMLX model
-mycli -t simple -m RedSage-8B-8bit       # test a 8B model with minimal tools
-mycli --cloud kimi "fix the test.rs"     # single-shot with Kimi K2.5
-mycli -p redteam --cloud deepseek        # offensive security persona
+mycli                                                               # REPL with local oMLX model
+mycli -t simple -m RedSage-8B                                       # testing models with differet tools settings
+mycli -t full -m gemma-4-31b-it-4bit "<prompt>"
+mycli --cloud kimi "fix the test.rs"                                 # single-shot with cloud model
+mycli -p redteam -t full -m gemma-4-31b-it-4bit "cybersec prompt"    # offensive security persona with full toolset
 ```
 
-** < 5MB static binary** | **Rust** | **34 tools** | **3 tool tiers** | **4 personas** | **MCP support** | **Hot-swappable models & providers**
+** ~ 5MB static binary** | **Rust** | **34 tools** | **3 tool tiers** | **4 personas** | **MCP support** | **Hot-swappable models & providers**
 
 ---
 
@@ -156,22 +157,22 @@ Environment variables (`MYCLI_MODEL`, `MYCLI_API_KEY`, `MOONSHOT_API_KEY`, `DEEP
 
 ## Usage
 
-### oMLX backend
+### oMLX backend - locall LLM inferece
 
 ```bash
 omlx serve --model-dir ~/models --paged-ssd-cache-dir ~/.omlx/cache --port 8000
 oMLX - LLM inference, optimized for your Mac
 ├─ https://github.com/jundot/omlx
-└─ Version: 0.2.21
+└─ Version: 0.3.4
 ```
 
 ### REPL
 
 ```bash
-mycli                     # auto-detect local oMLX model
-mycli -m Qwen3-30B        # specific local model
-mycli --cloud kimi        # start with Kimi K2.5
-mycli -t simple           # minimal tools for small models
+mycli                             # auto-detect local oMLX model
+mycli -m Trinity-Mini-8bit        # specific local model
+mycli --cloud kimi                # start with Kimi K2.5
+mycli -t simple                   # minimal tools for small models
 ```
 
 ### Single-shot
@@ -225,7 +226,7 @@ Designed to match tool complexity to model capability:
 | Tier | Tools | Best for |
 |------|-------|----------|
 | **simple** | Read, Write, Bash | 7B–8B models — minimal surface, hard to mess up |
-| **medium** | + Edit, Glob, Grep | 24B–30B models — structured tools, fuzzy matching helps |
+| **medium** | + Edit, Glob, Grep | 24B+ models — structured tools, fuzzy matching helps |
 | **full** | + WebFetch, Skills, MCP tools | Cloud models (Kimi, DeepSeek, Gemini) — full power |
 
 **Auto-detection:** local providers default to `medium`, cloud defaults to `full`.
@@ -254,7 +255,7 @@ Switch with `/persona` in the REPL, `--persona` / `-p` CLI flag, or `persona = "
 Persistent bottom bar showing session info at a glance:
 
 ```
- DeepHat-V1-7B | omlx | redteam | ctx:3% | in:1.0k out:46 | ~/project
+ gemma-4-26B-A4B | omlx | redteam | ctx:3% | in:1.0k out:46 | ~/project
 ```
 
 - **ctx%** — context window fill based on last turn's input tokens (color-coded: green/yellow/red)
