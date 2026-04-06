@@ -9,6 +9,12 @@
 
 set -euo pipefail
 
+# Custom TMPDIR to avoid EDR triggers on /tmp (set BENCH_TMPDIR to override)
+if [[ -n "${BENCH_TMPDIR:-}" ]]; then
+    export TMPDIR="$BENCH_TMPDIR"
+    mkdir -p "$TMPDIR"
+fi
+
 # macOS-compatible timeout (GNU timeout not available by default)
 run_with_timeout() {
     local secs=$1; shift
@@ -103,11 +109,11 @@ NUM_TESTS=$(echo "$TESTS" | wc -l | tr -d ' ')
 NUM_MODELS=$(echo "$MODELS" | wc -l | tr -d ' ')
 
 echo "╔══════════════════════════════════════════════════════════╗"
-echo "║  MyCLI Model Benchmark                                  ║"
+echo "║  MyCLI Model Benchmark                                   ║"
 echo "╠══════════════════════════════════════════════════════════╣"
-echo "║  Models: ${NUM_MODELS}                                            ║"
-echo "║  Tests:  ${NUM_TESTS}                                           ║"
-echo "║  Timeout: ${TIMEOUT}s per test                               ║"
+echo "║  Models: ${NUM_MODELS}                                   ║"
+echo "║  Tests:  ${NUM_TESTS}                                    ║"
+echo "║  Timeout: ${TIMEOUT}s per test                           ║"
 echo "╚══════════════════════════════════════════════════════════╝"
 echo ""
 
