@@ -4,6 +4,12 @@
 
 set -uo pipefail
 
+# Custom TMPDIR to avoid EDR triggers on /tmp (set BENCH_TMPDIR to override)
+if [[ -n "${BENCH_TMPDIR:-}" ]]; then
+    export TMPDIR="$BENCH_TMPDIR"
+    mkdir -p "$TMPDIR"
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 RESULTS_DIR="${1:-${SCRIPT_DIR}/results}"
 GRADED="${RESULTS_DIR}/graded.md"
@@ -46,7 +52,7 @@ for MODEL_DIR in "${RESULTS_DIR}"/*/; do
         printf "  %-25s " "${TEST_ID}"
 
         # Build JSON request via python using file input (avoids shell escaping issues)
-        TMPJSON=$(mktemp ~/DeveloperArea/tmp/grade.XXXXXX)
+        TMPJSON=$(mktemp)
         python3 - "$RESULT_FILE" "$SYSTEM_PROMPT" <<'PYEOF' > "$TMPJSON"
 import json, sys
 
@@ -67,7 +73,7 @@ req = {
 print(json.dumps(req))
 PYEOF
 
-        TMPRES=$(mktemp ~/DeveloperArea/tmp/grade.XXXXXX)
+        TMPRES=$(mktemp)
         curl -s --max-time 60 \
             -H "Authorization: Bearer ${API_KEY}" \
             -H "Content-Type: application/json" \
