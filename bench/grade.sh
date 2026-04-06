@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Grade benchmark results using Kimi API directly
+# Grade benchmark results using API directly
 # Usage: ./grade.sh [results-dir]
 
 set -uo pipefail
