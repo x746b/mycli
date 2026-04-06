@@ -157,7 +157,7 @@ Environment variables (`MYCLI_MODEL`, `MYCLI_API_KEY`, `MOONSHOT_API_KEY`, `DEEP
 
 ## Usage
 
-### oMLX backend - locall LLM inferece
+### oMLX backend - locall LLM inference
 
 ```bash
 omlx serve --model-dir ~/models --paged-ssd-cache-dir ~/.omlx/cache --port 8000
