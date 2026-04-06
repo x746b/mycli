@@ -39,8 +39,6 @@ Summary: /opt/mycli/bench/results/summary.md
 
 ## Example outputs
 
-# Benchmark Results — 2026-04-06 13:58
-
 | Model | Test | Persona | Duration | Words |
 |-------|------|---------|----------|-------|
 | gemma-4-26b-a4b-it-4bit | code-prime | code | 8s | 87 |
