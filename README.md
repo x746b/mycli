@@ -342,6 +342,19 @@ Use `/mcp` in the REPL to see connected servers and their status.
 
 ---
 
+## Benchmarking
+
+MyCLI includes a model benchmark suite for comparing local LLM capabilities across personas and tasks. See [`bench/README.md`](bench/README.md) for details.
+
+```bash
+cd bench
+./bench.sh                    # run all oMLX models through 12 test prompts
+./bench.sh WhiteRabbit        # filter by model name
+./grade.sh                    # auto-grade results via DeepSeek API
+```
+
+---
+
 ## Architecture
 
 MyCLI is built on the [Cersei SDK](https://github.com/pacifio/cersei) — a modular Rust SDK for building coding agents.
