@@ -226,7 +226,7 @@ Designed to match tool complexity to model capability:
 |------|-------|----------|
 | **simple** | Read, Write, Bash | 7B–8B models — minimal surface, hard to mess up |
 | **medium** | + Edit, Glob, Grep | 24B+ models — structured tools, fuzzy matching helps |
-| **full** | + WebFetch, Skills, MCP tools | Cloud models (Kimi, DeepSeek, Gemini) — full power |
+| **full** | + WebFetch, Skills, MCP tools | bigger local and cloud models — full power |
 
 **Auto-detection:** local providers default to `medium`, cloud defaults to `full`.
 
