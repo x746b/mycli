@@ -48,7 +48,6 @@ I can assist with:
 - Privilege Escalation - Kernel exploits, SUID abuse, capability manipulation, scheduled tasks
 - Lateral Movement - Pass-the-Hash, credential dumping, SMB/WinRM pivoting
 - Post-Exploitation - Persistence, credential harvesting, lateral reconnaissance
-- CTF Challenges - Walkthroughs, solve scripts, flag extraction
 - Vulnerability Research - Static/dynamic analysis, PoC development
 
 What are you working on today?
