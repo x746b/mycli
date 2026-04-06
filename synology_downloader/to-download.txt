@@ -1,0 +1,108 @@
+# Models to download — 3rd batch (Google Gemma 4, MLX)
+# One HuggingFace repo per line
+#
+# Revised: April 6, 2026
+# Target: Synology NAS overnight download, then copy to MBP
+# See: doc/models_download_synology.md for download instructions
+#
+# NOTE: All models from mlx-community — official MLX conversions
+#       of Google Gemma 4. Both 8-bit quantized and bf16 (unquantized).
+#
+
+# =============================================
+# GEMMA 4 — INSTRUCT (chat/instruction-following)
+# =============================================
+
+# Gemma 4 31B Instruct 8-bit — dense 31B, strong general model
+# ~31.5 GB, 4,370 downloads
+mlx-community/gemma-4-31b-it-8bit
+
+# Gemma 4 31B Instruct bf16 — unquantized, highest quality
+# ~58.3 GB, 3,138 downloads, M5 Max only
+mlx-community/gemma-4-31b-it-bf16
+
+# Gemma 4 26B-A4B Instruct 8-bit — MoE (26B total, 4B active), fast inference
+# ~26.1 GB, 5,404 downloads
+mlx-community/gemma-4-26b-a4b-it-8bit
+
+# Gemma 4 26B-A4B Instruct bf16 — MoE unquantized
+# ~48.1 GB, 1,535 downloads, M5 Max only
+mlx-community/gemma-4-26b-a4b-it-bf16
+
+# Gemma 4 E4B Instruct 8-bit — effective 4B params, lightweight
+# ~8.4 GB, 15,539 downloads (most popular Gemma 4 8-bit)
+mlx-community/gemma-4-e4b-it-8bit
+
+# Gemma 4 E4B Instruct bf16 — effective 4B unquantized
+# ~14.9 GB, 1,477 downloads
+mlx-community/gemma-4-e4b-it-bf16
+
+# Gemma 4 E2B Instruct 8-bit — effective 2B params, smallest/fastest
+# ~5.5 GB, 836 downloads
+mlx-community/gemma-4-e2b-it-8bit
+
+# Gemma 4 E2B Instruct bf16 — effective 2B unquantized
+# ~9.6 GB, 621 downloads
+mlx-community/gemma-4-e2b-it-bf16
+
+# =============================================
+# GEMMA 4 — BASE (pretrained, no instruction tuning)
+# =============================================
+
+# Gemma 4 31B Base 8-bit — dense 31B base
+# ~31.5 GB, 15,854 downloads (most downloaded Gemma 4 MLX overall)
+mlx-community/gemma-4-31b-8bit
+
+# Gemma 4 31B Base bf16 — unquantized base
+# ~58.3 GB, 5,743 downloads, M5 Max only
+mlx-community/gemma-4-31b-bf16
+
+# Gemma 4 26B-A4B Base 8-bit — MoE base
+# ~26.1 GB, 2,758 downloads
+mlx-community/gemma-4-26b-a4b-8bit
+
+# Gemma 4 26B-A4B Base bf16 — MoE unquantized base
+# ~48.1 GB, 2,093 downloads, M5 Max only
+mlx-community/gemma-4-26b-a4b-bf16
+
+# Gemma 4 E4B Base 8-bit — effective 4B base
+# ~8.4 GB, 2,716 downloads
+mlx-community/gemma-4-e4b-8bit
+
+# Gemma 4 E4B Base bf16 — effective 4B unquantized base
+# ~14.9 GB, 932 downloads
+mlx-community/gemma-4-e4b-bf16
+
+# Gemma 4 E2B Base 8-bit — effective 2B base
+# ~5.5 GB, 923 downloads
+mlx-community/gemma-4-e2b-8bit
+
+# Gemma 4 E2B Base bf16 — effective 2B unquantized base
+# ~9.6 GB, 571 downloads
+mlx-community/gemma-4-e2b-bf16
+
+# =============================================
+# TOTAL ESTIMATED SIZES
+# =============================================
+# --- Instruct 8-bit ---
+# Gemma 4 31B-it 8-bit           ~31.5 GB
+# Gemma 4 26B-A4B-it 8-bit       ~26.1 GB
+# Gemma 4 E4B-it 8-bit            ~8.4 GB
+# Gemma 4 E2B-it 8-bit            ~5.5 GB
+# --- Instruct bf16 ---
+# Gemma 4 31B-it bf16            ~58.3 GB
+# Gemma 4 26B-A4B-it bf16        ~48.1 GB
+# Gemma 4 E4B-it bf16            ~14.9 GB
+# Gemma 4 E2B-it bf16             ~9.6 GB
+# --- Base 8-bit ---
+# Gemma 4 31B 8-bit              ~31.5 GB
+# Gemma 4 26B-A4B 8-bit          ~26.1 GB
+# Gemma 4 E4B 8-bit               ~8.4 GB
+# Gemma 4 E2B 8-bit               ~5.5 GB
+# --- Base bf16 ---
+# Gemma 4 31B bf16               ~58.3 GB
+# Gemma 4 26B-A4B bf16           ~48.1 GB
+# Gemma 4 E4B bf16               ~14.9 GB
+# Gemma 4 E2B bf16                ~9.6 GB
+# -----------------------------------------
+# TOTAL:                        ~380.8 GB
