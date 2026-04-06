@@ -15,7 +15,7 @@ $ mycli
              __/ |                
             |___/                       
              
-  omlx | Qwen3.5-27B-MLX-8bit | tools:medium | max_turns:30
+  omlx | gemma-4-31b-it-4bit | tools:medium | max_turns:30
   Type /help for commands, Ctrl+C to cancel, Ctrl+D to exit
 
 > /help
