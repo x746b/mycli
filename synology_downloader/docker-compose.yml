@@ -1,0 +1,9 @@
+version: '3'
+services:
+  model-downloader:
+    image: python:3.11-slim
+    container_name: hf-model-downloader
+    volumes:
+      - /volume1/backup/LLM/models:/models
+    command: bash /models/download_models.sh
+    restart: "no"
