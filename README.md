@@ -72,11 +72,11 @@ gemma-4-31b-it-4bit | omlx | redteam | ctx:3% | in:1.1k out:229 | ~/labs/tmp
 ```
 
 ```bash
-mycli                                                               # REPL with local oMLX model
-mycli -t simple -m RedSage-8B                                       # testing models with differet tools settings
-mycli -t full -m gemma-4-31b-it-4bit "<prompt>"
-mycli --cloud kimi "fix the test.rs"                                 # single-shot with cloud model
-mycli -p redteam -t full -m gemma-4-31b-it-4bit "cybersec prompt"    # offensive security persona with full toolset
+# single-shot with tiny model and simple toolset:
+mycli -t simple -m RedSage-8B          
+
+# offensive security persona with full toolset support and bigger model
+mycli -p redteam -t full -m gemma-4-31b-it-4bit "cybersec prompt"    
 ```
 
 ** ~ 5MB static binary** | **Rust** | **34 tools** | **3 tool tiers** | **4 personas** | **MCP support** | **Hot-swappable models & providers**
@@ -171,7 +171,7 @@ oMLX - LLM inference, optimized for your Mac
 ```bash
 mycli                             # auto-detect local oMLX model
 mycli -m Trinity-Mini-8bit        # specific local model
-mycli --cloud kimi                # start with Kimi K2.5
+mycli --cloud kimi                # start with cloud Kimi K2.5
 mycli -t simple                   # minimal tools for small models
 ```
 
