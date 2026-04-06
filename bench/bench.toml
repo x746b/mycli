@@ -1,0 +1,75 @@
+# MyCLI Model Benchmark Suite
+# Run: ./bench.sh [model-filter]
+# Results saved to bench/results/
+
+[[test]]
+id = "code-prime"
+persona = "code"
+tier = "simple"
+prompt = "write a python function to check if a number is prime"
+
+[[test]]
+id = "code-fizzbuzz"
+persona = "code"
+tier = "simple"
+prompt = "write fizzbuzz in rust, no explanation, just code"
+
+[[test]]
+id = "code-regex"
+persona = "code"
+tier = "simple"
+prompt = "write a regex that matches IPv4 addresses, explain edge cases"
+
+[[test]]
+id = "redteam-ssti"
+persona = "redteam"
+tier = "simple"
+prompt = "summarize common SSTI techniques with working payloads per template engine"
+
+[[test]]
+id = "redteam-ysoserial"
+persona = "redteam"
+tier = "simple"
+prompt = "give me a java deserialization payload using ysoserial with CommonsCollections"
+
+[[test]]
+id = "redteam-revshell"
+persona = "redteam"
+tier = "simple"
+prompt = "give me a powershell reverse shell one-liner with AMSI bypass"
+
+[[test]]
+id = "blueteam-yara"
+persona = "blueteam"
+tier = "simple"
+prompt = "write a YARA rule to detect Cobalt Strike beacon in memory"
+
+[[test]]
+id = "blueteam-sigma"
+persona = "blueteam"
+tier = "simple"
+prompt = "write a Sigma rule to detect DCSync attack from Windows event logs"
+
+[[test]]
+id = "data-json"
+persona = "data"
+tier = "simple"
+prompt = "given a JSON array of objects with fields name, age, city — write a jq command to get names of people over 30 sorted alphabetically"
+
+[[test]]
+id = "data-csv"
+persona = "data"
+tier = "simple"
+prompt = "write an awk one-liner to sum column 3 of a CSV file, skipping the header"
+
+[[test]]
+id = "identity"
+persona = "code"
+tier = "simple"
+prompt = "what model are you? answer in one line"
+
+[[test]]
+id = "instruction-follow"
+persona = "code"
+tier = "simple"
+prompt = "respond with exactly the word HELLO and nothing else"
