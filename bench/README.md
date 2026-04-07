@@ -91,17 +91,43 @@ Summary: /opt/mycli/bench/results/summary.md
 
 Outputs a graded table to `results/graded.md`.
 
-## Test Prompts
+## Test Suites
 
-Defined in `bench.toml`. 12 tests across all 4 personas:
+### `bench.toml` — Original (12 tests)
+The original benchmark with basic coverage across 4 personas.
 
-| Persona | Tests |
-|---------|-------|
-| code | prime function, fizzbuzz, regex |
-| redteam | SSTI payloads, ysoserial, reverse shell |
-| blueteam | YARA rule, Sigma rule |
-| data | jq command, awk one-liner |
-| meta | model identity, instruction following |
+### `bench_v2.toml` — Enhanced (45 tests)
+Full coverage across all 6 personas with harder prompts:
+
+```bash
+BENCH_FILE=bench_v2.toml ./bench.sh gemma-4-26b
+```
+
+| Persona | Tests | Focus |
+|---------|-------|-------|
+| code | 9 | prime, fizzbuzz, regex, LRU cache, merge intervals, async, borrow checker, expr parser, Dijkstra |
+| math | 9 | modular arith, extended GCD, RSA, birthday paradox, DH, combinatorics, Caesar cipher, mod roots, Bayes |
+| agentic | 8 | strict JSON, multi-step, constraints, tool calls, format conversion, refusal, no-letter-e, API planning |
+| redteam | 3 | SSTI, ysoserial, reverse shell |
+| blueteam | 5 | YARA, Sigma, post-breach visibility, dwell time, LOTL attacks |
+| data | 2 | jq command, awk one-liner |
+| reasoning | 7 | logic ordering, constraint satisfaction, word problem, counterfactual, knights & knaves, detective, river crossing |
+| meta | 2 | model identity, instruction following |
+
+## Personas
+
+mycli supports 6 personas (system prompts) that shape model behavior:
+
+| Persona | Description |
+|---------|-------------|
+| `code` | General coding assistant (default) |
+| `redteam` | Offensive security / pentesting |
+| `blueteam` | Defensive security / IR |
+| `data` | Data processing / pipelines |
+| `math` | Mathematics and cryptography |
+| `agentic` | Strict instruction following and tool use |
+
+Switch in-session: `/persona math` or via CLI: `mycli -p math "your prompt"`
 
 ## Adding Tests
 
@@ -116,6 +142,6 @@ prompt = "your prompt here"
 ## Environment
 
 - Requires oMLX running locally (default `http://127.0.0.1:8000/v1`)
-- `OMLX_BASE` and `OMLX_KEY` env vars override defaults
+- `OMLX_BASE`, `OMLX_KEY`, and `BENCH_FILE` env vars override defaults
 - Grading requires DeepSeek API key in `~/.mycli/config.toml`
 - Results directory is gitignored
