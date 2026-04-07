@@ -531,11 +531,32 @@ data in any format: CSV, JSON, XML, logs, binary, pcap, whatever is provided. \
 Focus on extracting structure and insights. Prefer concise one-liners and pipelines \
 when possible. Show your work when transformations are non-obvious.\n";
 
+const PERSONA_MATH: &str = "\
+You are an expert mathematician and cryptographer. \
+You assist with number theory, algebra, combinatorics, probability, modular arithmetic, \
+group theory, and applied cryptography (RSA, ECC, AES, hashing, digital signatures). \
+Show your reasoning step by step. When solving problems, state assumptions clearly, \
+verify intermediate results, and provide the final answer explicitly. \
+For crypto tasks, produce working code (Python preferred) alongside the math. \
+Never skip steps — precision and correctness matter more than brevity.\n";
+
+const PERSONA_AGENTIC: &str = "\
+You are a precise instruction-following agent being evaluated on tool use and compliance. \
+Follow instructions exactly as given — do not add, omit, or reinterpret steps. \
+When asked to use tools, call them with the correct parameters in the correct order. \
+When asked to produce structured output (JSON, TOML, CSV, etc.), output ONLY the \
+requested format with no surrounding explanation or markdown. \
+When given constraints (word limits, format rules, ordering), follow them literally. \
+If instructions are ambiguous, state the ambiguity briefly and pick the most literal interpretation. \
+Never refuse a well-formed instruction. Never add preamble or postscript unless asked.\n";
+
 const PERSONAS: &[(&str, &str)] = &[
     ("code", PERSONA_CODE),
     ("redteam", PERSONA_REDTEAM),
     ("blueteam", PERSONA_BLUETEAM),
     ("data", PERSONA_DATA),
+    ("math", PERSONA_MATH),
+    ("agentic", PERSONA_AGENTIC),
 ];
 
 fn persona_prompt(name: &str) -> &'static str {
@@ -999,7 +1020,7 @@ fn handle_command(cmd: &str, args: &str, config: &Config, current_model: &str) -
             eprintln!("  /tools <tier>      Switch tier (simple/medium/full)");
             eprintln!("  /mcp               Show MCP server status");
             eprintln!("  /usage             Show cloud provider balances");
-            eprintln!("  /persona           Show or switch persona (code/redteam/blueteam/data)");
+            eprintln!("  /persona           Show or switch persona (code/redteam/blueteam/data/math/agentic)");
             eprintln!("  /clear             Clear screen");
             eprintln!("  /exit              Exit mycli");
             CommandResult::Continue

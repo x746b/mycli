@@ -31,7 +31,7 @@ run_with_timeout() {
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 MYCLI="${SCRIPT_DIR}/../mycli"
-BENCH_FILE="${SCRIPT_DIR}/bench.toml"
+BENCH_FILE="${BENCH_FILE:-${SCRIPT_DIR}/bench.toml}"
 RESULTS_DIR="${SCRIPT_DIR}/results"
 TIMEOUT=120  # seconds per test
 

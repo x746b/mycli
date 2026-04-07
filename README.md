@@ -28,7 +28,7 @@ Commands:
   /tools             Pick tool tier (interactive)
   /tools <tier>      Switch tier (simple/medium/full)
   /persona           Pick persona (interactive)
-  /persona <name>    Switch persona (code/redteam/blueteam/data)
+  /persona <name>    Switch persona (code/redteam/blueteam/data/math/agentic)
   /usage             Show cloud provider balances
   /mcp               Show MCP server status
   /clear             Clear screen
@@ -50,6 +50,8 @@ tools [full]: Read, Write, Bash, Edit, Glob, Grep, WebFetch, Skill, <MCP tools>
   ▸ redteam (active)
     blueteam
     data
+    math
+    agentic
 
 > hey
   thinking...
@@ -78,7 +80,7 @@ mycli -t simple -m RedSage-8B
 mycli -p redteam -t full -m gemma-4-31b-it-4bit "cybersec prompt"    
 ```
 
-** ~ 5MB static binary** | **Rust** | **34 tools** | **3 tool tiers** | **4 personas** | **MCP support** | **Hot-swappable models & providers**
+** ~ 5MB static binary** | **Rust** | **34 tools** | **3 tool tiers** | **6 personas** | **MCP support** | **Hot-swappable models & providers**
 
 ---
 
@@ -113,7 +115,7 @@ api_key = "your-omlx-key"
 # base_url defaults to http://127.0.0.1:8000/v1
 
 # ─── Persona & tool tier ───────────────────────────────────
-# persona = "code"         # code, redteam, blueteam, data
+# persona = "code"         # code, redteam, blueteam, data, math, agentic
 # tool_tier = "auto"       # auto = medium for local, full for cloud
 # cost_limit = 1.0         # stop agent after $1 cloud spend (0 = unlimited)
 
@@ -188,7 +190,7 @@ mycli --cloud deepseek -y "refactor main.rs"   # auto-approve tools
 | `-m, --model` | Model name (oMLX model ID or cloud model) |
 | `--cloud <name>` | Use cloud provider (kimi, deepseek, gemini, openai, or config profile) |
 | `-t, --tools <tier>` | Tool tier: `simple`, `medium`, `full`, or `auto` (default) |
-| `-p, --persona <name>` | Persona: `code` (default), `redteam`, `blueteam`, `data` |
+| `-p, --persona <name>` | Persona: `code` (default), `redteam`, `blueteam`, `data`, `math`, `agentic` |
 | `-y, --yes` | Auto-approve all tool permissions |
 | `--max-turns` | Max agent turns per prompt (default: 30) |
 | `-C, --directory` | Working directory |
@@ -208,7 +210,7 @@ mycli --cloud deepseek -y "refactor main.rs"   # auto-approve tools
 | `/tools` | Interactive tool tier picker |
 | `/tools <tier>` | Switch tier (`simple` / `medium` / `full`) |
 | `/persona` | Interactive persona picker |
-| `/persona <name>` | Switch persona (`code` / `redteam` / `blueteam` / `data`) |
+| `/persona <name>` | Switch persona (`code` / `redteam` / `blueteam` / `data` / `math` / `agentic`) |
 | `/usage` | Show cloud provider account balances (Kimi, DeepSeek) |
 | `/mcp` | Show MCP server status |
 | `/clear` | Clear screen |
@@ -246,6 +248,8 @@ Pre-configured system prompt profiles that shape the model's behavior:
 | **redteam** | Offensive security — pentesting, exploitation, CTF, no guardrails |
 | **blueteam** | Defensive security — threat detection, forensics, SIEM/YARA/Sigma rules |
 | **data** | Data processing — parse, transform, analyze any format |
+| **math** | Mathematics and cryptography — number theory, modular arithmetic, RSA/ECC/AES, step-by-step proofs |
+| **agentic** | Strict instruction following — tool use, structured output, constraint compliance, format adherence |
 
 Switch with `/persona` in the REPL, `--persona` / `-p` CLI flag, or `persona = "redteam"` in config.
 
@@ -347,10 +351,16 @@ MyCLI includes a model benchmark suite for comparing local LLM capabilities acro
 
 ```bash
 cd bench
-./bench.sh                    # run all oMLX models through 12 test prompts
-./bench.sh WhiteRabbit        # filter by model name
-./grade.sh                    # auto-grade results via DeepSeek API
+./bench.sh                                      # run all oMLX models (bench.toml, 12 tests)
+./bench.sh WhiteRabbit                           # filter by model name
+BENCH_FILE=bench_v2.toml ./bench.sh              # enhanced suite (45 tests, all 6 personas)
+BENCH_FILE=bench_v2.toml ./bench.sh gemma-4-26b  # enhanced suite, specific model
+./grade.sh                                       # auto-grade results via DeepSeek API
 ```
+
+**Test suites:**
+- `bench.toml` — Original 12 tests across 4 personas
+- `bench_v2.toml` — Enhanced 45 tests: code (9), math (9), agentic (8), reasoning (7), blueteam (5), redteam (3), data (2), meta (2)
 
 ---
 
