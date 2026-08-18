@@ -18,32 +18,6 @@ $ mycli
   omlx | mlx-community_Qwen3.8-27B-mxfp8 | tools:medium | max_turns:30
   Type /help for commands, Ctrl+C to cancel, Ctrl+D to exit
 
-> /help
-Commands:
-  /help              Show this help
-  /model             Pick local oMLX model (switches back from cloud)
-  /model <name>      Switch to a local model
-  /cloud             Pick cloud provider
-  /cloud <name>      Switch to cloud (e.g. kimi, deepseek)
-  /tools             Pick tool tier (interactive)
-  /tools <tier>      Switch tier (simple/medium/full)
-  /persona           Pick persona (interactive)
-  /persona <name>    Switch persona (code/redteam/blueteam/data/math/agentic)
-  /usage             Show cloud provider balances
-  /mcp               Show MCP server status
-  /clear             Clear screen
-  /exit              Exit mycli
-```
-
-```bash
-> /tools
-  Select tool tier: (↑↓ select, Enter confirm, Esc cancel)
-    simple
-    medium
-  ▸ full (active)
-
-tools [full]: Read, Write, Bash, Edit, Glob, Grep, WebFetch, Skill, <MCP tools>
-
 > /persona
   Select persona: (↑↓ select, Enter confirm, Esc cancel)
     code
@@ -57,15 +31,6 @@ tools [full]: Read, Write, Bash, Edit, Glob, Grep, WebFetch, Skill, <MCP tools>
   thinking...
 
 Hey! Ready to help you with offensive security operations.
-
-I can assist with:
-- Reconnaissance - Port scanning, service enumeration, subdomain discovery, target mapping
-- Exploitation - CVE analysis, exploit development, RCE/SRFI/SSRF/LFI/SQLi payloads
-- Privilege Escalation - Kernel exploits, SUID abuse, capability manipulation, scheduled tasks
-- Lateral Movement - Pass-the-Hash, credential dumping, SMB/WinRM pivoting
-- Post-Exploitation - Persistence, credential harvesting, lateral reconnaissance
-- Vulnerability Research - Static/dynamic analysis, PoC development
-
 What are you working on today?
 
 > mlx-community_Qwen3.8-27B-mxfp8 | omlx | redteam | ctx:3% | in:1.1k out:229 | ~/labs/tmp
@@ -97,7 +62,7 @@ Small local LLMs (7B–30B) can chat well but struggle with structured tool call
 ## Install
 
 ```bash
-git clone https://github.com/x746b/mycli && cd /opt/mycli
+git clone https://github.com/x746b/mycli && cd mycli
 cargo build --release
 ```
 Requires Rust 1.85+, OpenSSL dev libraries (`libssl-dev` / `openssl-devel`).
@@ -131,33 +96,17 @@ env = { VAULT_DB = "/path/to/vault.db", VAULT_READONLY = "1" }
 api_key = "sk-..."
 model = "kimi-k3"
 
-[cloud.kimi-think]
-api_key = "sk-..."
-model = "kimi-k3"
-max_tokens = 32768
-
-[cloud.deepseek]
-api_key = "sk-..."
-model = "deepseek-chat"
-
-[cloud.deepseek-think]
-api_key = "sk-..."
-model = "deepseek-reasoner"
-
-[cloud.gemini]
-api_key = "AI..."
-model = "gemini-3.1-pro-preview"
-
 [cloud.openai]
 api_key = "sk-..."
 model = "gpt-5.4"
 # admin_key = "sk-admin-..."      # optional, /usage spend reporting only
-# credits = 50.00                 # optional, top-up amount
-# credits_since = "2026-08-01"    # optional, when it landed
+# credits = 50.00                 # optional, credit balance
+# credits_since = "2026-08-01"    # optional, date that balance was true
 ```
 
-`model` and `max_tokens` in a profile override the built-in preset defaults below —
-that is how you run a newer model than the preset ships with.
+Same shape for `kimi-think`, `deepseek`, `deepseek-think` and `gemini`; add
+`max_tokens` to any profile to override. `model` and `max_tokens` override the
+built-in preset defaults — that is how you run a newer model than the preset ships with.
 
 Environment variables (`MYCLI_MODEL`, `MYCLI_API_KEY`, `MOONSHOT_API_KEY`, `DEEPSEEK_API_KEY`, `GEMINI_API_KEY`, `OPENAI_API_KEY`, `OPENAI_ADMIN_KEY`) are also supported.
 
@@ -171,23 +120,19 @@ Environment variables (`MYCLI_MODEL`, `MYCLI_API_KEY`, `MOONSHOT_API_KEY`, `DEEP
 | Kimi (Moonshot) | balance (cash / credits) | normal API key |
 | OpenAI | **month-to-date spend** | `admin_key` (`sk-admin-…`, `api.usage.read` scope) |
 
-OpenAI exposes **no credit-balance endpoint at all** — not to ordinary keys, and not to admin
-keys either (every `/v1/organization/*credit*` path 404s; the legacy `/dashboard/billing/*`
-routes answer only to a browser session key). Remaining credit can therefore only be derived,
-so set `credits` and `credits_since` to your last top-up and `/usage` will show what's left:
+OpenAI exposes no credit-balance endpoint to any key type, so remaining credit must be
+derived: set `credits` to the balance shown on your billing page and `credits_since` to the
+date you read it. Without them, `/usage` falls back to month-to-date spend.
 
 ```
 OpenAI  $48.62 left  (spent $1.38 of $50.00 since 2026-08-01)
 ```
 
-Without them it falls back to calendar month-to-date spend. The figure goes amber under 15%
-remaining and red at zero.
-
 ---
 
 ## Usage
 
-### oMLX backend - locall LLM inference
+### oMLX backend — local LLM inference
 
 ```bash
 omlx serve --model-dir ~/AI/models --paged-ssd-cache-dir ~/.omlx/cache --port 8000
@@ -240,7 +185,7 @@ mycli --cloud deepseek -y "refactor main.rs"   # auto-approve tools
 | `/tools <tier>` | Switch tier (`simple` / `medium` / `full`) |
 | `/persona` | Interactive persona picker |
 | `/persona <name>` | Switch persona (`code` / `redteam` / `blueteam` / `data` / `math` / `agentic`) |
-| `/usage` | Show cloud provider account balances (Kimi, DeepSeek) |
+| `/usage` | Show cloud balances / spend (Kimi, DeepSeek, OpenAI) |
 | `/mcp` | Show MCP server status |
 | `/clear` | Clear screen |
 | `/exit` | Exit |
@@ -294,27 +239,6 @@ Persistent bottom bar showing session info at a glance:
 - **in/out** — cumulative billing token totals for the session
 - Token counters reset on model/provider switch
 
-### Cloud Balance (`/usage`)
-
-Query account balances for supported cloud providers:
-
-```
-> /usage
-Cloud Provider Balances:
-  DeepSeek (USD)  $9.51  (topped-up: $9.51, granted: $0.00)
-  Kimi (Moonshot)  $26.03  (cash: $25.00, credits: $1.03)
-```
-
-Supported: Kimi/Moonshot, DeepSeek. API keys auto-detected from config or environment.
-
-### Provider Support
-- **oMLX** (local) — auto-detects loaded models, interactive picker
-- **Kimi K3** — with and without thinking mode
-- **DeepSeek** — chat and reasoner models
-- **Google Gemini** — via AI Studio OpenAI-compatible endpoint
-- **OpenAI** — GPT-5.x (max_completion_tokens handled) and GPT-4o
-- Any OpenAI-compatible endpoint via `--base-url`
-
 ### Tool Capabilities
 - **Filesystem:** Read, Write, Edit (with fuzzy matching + line-range mode), Glob, Grep
 - **Shell:** Bash execution with permission control
@@ -344,18 +268,9 @@ Local models often get `old_string` wrong in edit operations. MyCLI handles this
 
 ## MCP (Model Context Protocol)
 
-MyCLI connects to MCP servers over stdio transport. Tools are auto-discovered at startup when using the `full` tool tier.
-
-```toml
-# ~/.mycli/config.toml
-[[mcp]]
-name = "command-vault"
-command = "/path/to/command-vault/.venv/bin/python"
-args = ["-m", "command_vault.server"]
-env = { VAULT_DB = "/path/to/vault.db", VAULT_READONLY = "1" }
-```
-
-Use `/mcp` in the REPL to see connected servers and their status.
+MyCLI connects to MCP servers over stdio transport. Tools are auto-discovered at
+startup when using the `full` tool tier — add `[[mcp]]` blocks to your config (see
+[Configuration](#configuration)), then use `/mcp` in the REPL to see server status.
 
 ---
 
@@ -378,28 +293,16 @@ BENCH_FILE=bench_v2.toml ./bench.sh mlx-community_Qwen3.8-27B-mxfp8   # enhanced
 
 ### Refusal comparison
 
-`bench.sh` measures whether a model *can* do a task. [`refusal_test.py`](bench/refusal_test.py)
-measures whether it *will* — it runs 8 HTB/OSCP probes against two or more oMLX models and
-writes a side-by-side report of every full response.
+`bench.sh` measures whether a model *can* do a task; [`refusal_test.py`](bench/refusal_test.py)
+measures whether it *will* — 8 HTB/OSCP probes across two or more models, scored on refusal,
+code blocks actually produced, and ethics boilerplate. Details in
+[`bench/README.md`](bench/README.md#refusal-comparison-refusal_testpy).
 
 ```bash
-cd bench
-./refusal_test.py --open                # run probes, write JSON + HTML + MD, then open
-./refusal_test.py --models A B C        # any oMLX models
-./refusal_test.py --report-only         # rebuild reports from saved JSON, no re-run
+cd bench && ./refusal_test.py --open
 ```
 
 [![Refusal report](bench/refusal-report.png)](bench/refusal_report.example.md)
-
-Scored on three axes, because refusal alone is a weak signal — a model can "comply" and
-still return a vague non-answer: **verdict** (refusal phrase in the opening), **blocks**
-(fenced code actually produced) and **hedges** (ethics boilerplate that burns tokens
-without adding tradecraft).
-
-Sample output: [`refusal_report.example.md`](bench/refusal_report.example.md) renders in the
-browser; [`refusal_report.example.html`](bench/refusal_report.example.html) is the styled
-version pictured above. See [`bench/README.md`](bench/README.md#refusal-comparison-refusal_testpy)
-for the probe list and the two traps worth knowing.
 
 ---
 
@@ -423,13 +326,13 @@ mycli (CLI binary)
 
 ## Acknowledgments
 
-MyCLI is built on top of the **[Cersei SDK](https://github.com/pacifio/cersei)** by [Adib Mohsin](https://github.com/pacifio). 
-Cersei provides the foundation — the agent loop, tool execution, provider abstraction, memory system, MCP client, and more. Without this SDK, MyCLI would not exist. Thank you.
+MyCLI is built on top of the **[Cersei SDK](https://github.com/pacifio/cersei)** by
+[Adib Mohsin](https://github.com/pacifio) — the agent loop, tool execution, provider
+abstraction, memory system and MCP client. Without this SDK, MyCLI would not exist. Thank you.
 
-Fixes and enhancements made to the SDK as part of MyCLI development:
-- OpenAI-compatible provider: tool call streaming, message round-trips, thinking mode (`reasoning_content`)
-- Edit tool: fuzzy whitespace matching, line-range editing mode
-- MCP client: JSON-RPC 2.0 notification compliance
+Enhancements contributed back during MyCLI development: provider tool-call streaming,
+message round-trips and thinking mode; Edit fuzzy/line-range matching; MCP JSON-RPC 2.0
+notification compliance.
 
 ---
 
