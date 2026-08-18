@@ -895,6 +895,84 @@ async fn run_prompt(
 // ─── Slash commands ─────────────────────────────────────────────────────────
 
 /// Fetch and display account balances for cloud providers that support it.
+/// OpenAI exposes no credit-balance endpoint to ordinary API keys: the legacy
+/// `/dashboard/billing/*` routes require a browser session key, and the Costs
+/// API requires an admin key carrying the `api.usage.read` scope. So report
+/// month-to-date *spend* instead of a balance, and say plainly when the key
+/// cannot see it.
+fn show_openai_spend(client: &reqwest::blocking::Client, resolved: &crate::config::ResolvedCloud) {
+    const LABEL: &str = "  \x1b[36mOpenAI (spend MTD)\x1b[0m";
+
+    if resolved.admin_key.is_empty() {
+        eprintln!(
+            "{LABEL}  \x1b[90mneeds an admin key — set admin_key in [cloud.openai] \
+or OPENAI_ADMIN_KEY\x1b[0m"
+        );
+        return;
+    }
+
+    // Start of the current UTC month, as a Unix timestamp.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let days_into_month = (now / 86_400) % 30; // coarse; the API buckets by day
+    let start_time = now.saturating_sub(days_into_month * 86_400);
+
+    let url = format!(
+        "https://api.openai.com/v1/organization/costs?start_time={start_time}&limit=31"
+    );
+    match client
+        .get(&url)
+        .header("authorization", format!("Bearer {}", resolved.admin_key))
+        .timeout(std::time::Duration::from_secs(5))
+        .send()
+    {
+        Ok(resp) if resp.status().is_success() => {
+            let json: serde_json::Value = match resp.json() {
+                Ok(j) => j,
+                Err(e) => {
+                    eprintln!("{LABEL}  \x1b[33m{e}\x1b[0m");
+                    return;
+                }
+            };
+            // Buckets → results → amount.value, summed.
+            let total: f64 = json["data"]
+                .as_array()
+                .map(|buckets| {
+                    buckets
+                        .iter()
+                        .filter_map(|b| b["results"].as_array())
+                        .flatten()
+                        .filter_map(|r| r["amount"]["value"].as_f64())
+                        .sum()
+                })
+                .unwrap_or(0.0);
+            let currency = json["data"]
+                .as_array()
+                .and_then(|b| b.first())
+                .and_then(|b| b["results"].as_array())
+                .and_then(|r| r.first())
+                .and_then(|r| r["amount"]["currency"].as_str())
+                .unwrap_or("usd")
+                .to_uppercase();
+            let sym = if currency == "USD" { "$" } else { "" };
+            eprintln!("{LABEL}  {sym}{total:.2} {currency}");
+        }
+        Ok(resp) if resp.status().as_u16() == 401 || resp.status().as_u16() == 403 => {
+            eprintln!(
+                "{LABEL}  \x1b[33madmin key lacks api.usage.read scope\x1b[0m"
+            );
+        }
+        Ok(resp) => {
+            eprintln!("{LABEL}  \x1b[33mHTTP {}\x1b[0m", resp.status());
+        }
+        Err(e) => {
+            eprintln!("{LABEL}  \x1b[33m{e}\x1b[0m");
+        }
+    }
+}
+
 fn show_cloud_balances(config: &Config) {
     let client = reqwest::blocking::Client::new();
     let clouds = config.available_clouds();
@@ -988,13 +1066,17 @@ fn show_cloud_balances(config: &Config) {
                     }
                 }
             }
-            _ => {} // No balance API for OpenAI, Gemini, etc.
+            "openai" if queried.insert("openai".into()) => {
+                found_any = true;
+                show_openai_spend(&client, &resolved);
+            }
+            _ => {} // No balance API for Gemini, etc.
         }
     }
 
     if !found_any {
         eprintln!("  \x1b[90mNo cloud providers with balance API found.");
-        eprintln!("  Supported: kimi/moonshot, deepseek. Set API keys to enable.\x1b[0m");
+        eprintln!("  Supported: kimi/moonshot, deepseek, openai. Set API keys to enable.\x1b[0m");
     }
 }
 

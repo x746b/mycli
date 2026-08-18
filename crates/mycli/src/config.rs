@@ -37,6 +37,10 @@ use std::path::{Path, PathBuf};
 pub struct CloudProfile {
     /// API key for this cloud provider
     pub api_key: String,
+    /// Admin key, used only for billing/usage queries. OpenAI's Costs API needs
+    /// an `sk-admin-…` key with the `api.usage.read` scope; ordinary `sk-` keys
+    /// get 403. Falls back to OPENAI_ADMIN_KEY when unset.
+    pub admin_key: String,
     /// Base URL override (otherwise uses built-in preset)
     pub base_url: String,
     /// Model name override (otherwise uses preset default)
@@ -201,6 +205,12 @@ impl Config {
             _ => String::new(),
         };
 
+        // Admin key: profile > OPENAI_ADMIN_KEY > empty. Billing queries only.
+        let admin_key = match &profile {
+            Some(p) if !p.admin_key.is_empty() => p.admin_key.clone(),
+            _ => std::env::var("OPENAI_ADMIN_KEY").unwrap_or_default(),
+        };
+
         let max_tokens = profile
             .and_then(|p| p.max_tokens)
             .or(preset.as_ref().map(|p| p.max_tokens));
@@ -211,6 +221,7 @@ impl Config {
             base_url,
             model,
             api_key,
+            admin_key,
             max_tokens,
             max_turns,
         })
@@ -235,6 +246,7 @@ pub struct ResolvedCloud {
     pub base_url: String,
     pub model: String,
     pub api_key: String,
+    pub admin_key: String,
     pub max_tokens: Option<u32>,
     pub max_turns: Option<u32>,
 }

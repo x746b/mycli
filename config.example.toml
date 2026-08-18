@@ -56,3 +56,8 @@ model = "gemini-3.1-pro-preview"
 [cloud.openai]
 api_key = "sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 model = "gpt-5.4"
+# Optional, for `/usage` only. OpenAI has no credit-balance endpoint for normal
+# keys, so /usage reports month-to-date spend via the Costs API — which needs an
+# admin key (sk-admin-...) carrying the api.usage.read scope. Or set
+# OPENAI_ADMIN_KEY in the environment.
+# admin_key = "sk-admin-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"

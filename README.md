@@ -151,12 +151,25 @@ model = "gemini-3.1-pro-preview"
 [cloud.openai]
 api_key = "sk-..."
 model = "gpt-5.4"
+# admin_key = "sk-admin-..."   # optional, /usage spend reporting only
 ```
 
 `model` and `max_tokens` in a profile override the built-in preset defaults below —
 that is how you run a newer model than the preset ships with.
 
-Environment variables (`MYCLI_MODEL`, `MYCLI_API_KEY`, `MOONSHOT_API_KEY`, `DEEPSEEK_API_KEY`, `GEMINI_API_KEY`, `OPENAI_API_KEY`) are also supported.
+Environment variables (`MYCLI_MODEL`, `MYCLI_API_KEY`, `MOONSHOT_API_KEY`, `DEEPSEEK_API_KEY`, `GEMINI_API_KEY`, `OPENAI_API_KEY`, `OPENAI_ADMIN_KEY`) are also supported.
+
+### `/usage` — cloud balances
+
+`/usage` queries each configured provider:
+
+| Provider | Reports | Key needed |
+|----------|---------|------------|
+| DeepSeek | balance (topped-up / granted) | normal API key |
+| Kimi (Moonshot) | balance (cash / credits) | normal API key |
+| OpenAI | **month-to-date spend** | `admin_key` (`sk-admin-…`, `api.usage.read` scope) |
+
+OpenAI exposes no credit-balance endpoint to API keys — the legacy `/dashboard/billing/*` routes require a browser session key, and the Costs API requires an admin key. So the OpenAI row shows spend rather than a remaining balance, and says so when the key can't see it.
 
 ---
 
