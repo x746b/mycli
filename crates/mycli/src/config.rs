@@ -41,6 +41,12 @@ pub struct CloudProfile {
     /// an `sk-admin-…` key with the `api.usage.read` scope; ordinary `sk-` keys
     /// get 403. Falls back to OPENAI_ADMIN_KEY when unset.
     pub admin_key: String,
+    /// Credit top-up amount, in the provider's billing currency. OpenAI exposes
+    /// no balance endpoint at all, so remaining credit can only be derived:
+    /// this figure minus spend since `credits_since`. Purely informational.
+    pub credits: Option<f64>,
+    /// Date the `credits` top-up landed, `YYYY-MM-DD`. Spend is summed from here.
+    pub credits_since: String,
     /// Base URL override (otherwise uses built-in preset)
     pub base_url: String,
     /// Model name override (otherwise uses preset default)
@@ -211,6 +217,11 @@ impl Config {
             _ => std::env::var("OPENAI_ADMIN_KEY").unwrap_or_default(),
         };
 
+        let credits = profile.and_then(|p| p.credits);
+        let credits_since = profile
+            .map(|p| p.credits_since.clone())
+            .unwrap_or_default();
+
         let max_tokens = profile
             .and_then(|p| p.max_tokens)
             .or(preset.as_ref().map(|p| p.max_tokens));
@@ -222,6 +233,8 @@ impl Config {
             model,
             api_key,
             admin_key,
+            credits,
+            credits_since,
             max_tokens,
             max_turns,
         })
@@ -247,6 +260,8 @@ pub struct ResolvedCloud {
     pub model: String,
     pub api_key: String,
     pub admin_key: String,
+    pub credits: Option<f64>,
+    pub credits_since: String,
     pub max_tokens: Option<u32>,
     pub max_turns: Option<u32>,
 }

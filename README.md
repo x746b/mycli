@@ -151,7 +151,9 @@ model = "gemini-3.1-pro-preview"
 [cloud.openai]
 api_key = "sk-..."
 model = "gpt-5.4"
-# admin_key = "sk-admin-..."   # optional, /usage spend reporting only
+# admin_key = "sk-admin-..."      # optional, /usage spend reporting only
+# credits = 50.00                 # optional, top-up amount
+# credits_since = "2026-08-01"    # optional, when it landed
 ```
 
 `model` and `max_tokens` in a profile override the built-in preset defaults below —
@@ -169,7 +171,17 @@ Environment variables (`MYCLI_MODEL`, `MYCLI_API_KEY`, `MOONSHOT_API_KEY`, `DEEP
 | Kimi (Moonshot) | balance (cash / credits) | normal API key |
 | OpenAI | **month-to-date spend** | `admin_key` (`sk-admin-…`, `api.usage.read` scope) |
 
-OpenAI exposes no credit-balance endpoint to API keys — the legacy `/dashboard/billing/*` routes require a browser session key, and the Costs API requires an admin key. So the OpenAI row shows spend rather than a remaining balance, and says so when the key can't see it.
+OpenAI exposes **no credit-balance endpoint at all** — not to ordinary keys, and not to admin
+keys either (every `/v1/organization/*credit*` path 404s; the legacy `/dashboard/billing/*`
+routes answer only to a browser session key). Remaining credit can therefore only be derived,
+so set `credits` and `credits_since` to your last top-up and `/usage` will show what's left:
+
+```
+OpenAI  $48.62 left  (spent $1.38 of $50.00 since 2026-08-01)
+```
+
+Without them it falls back to calendar month-to-date spend. The figure goes amber under 15%
+remaining and red at zero.
 
 ---
 

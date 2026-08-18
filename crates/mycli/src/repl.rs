@@ -1,6 +1,7 @@
 //! REPL + single-shot execution, agent construction, and event loop.
 
 use crate::config::{self, Config};
+use chrono::Datelike;
 use crate::render::{self, Renderer};
 use crate::Cli;
 
@@ -895,13 +896,18 @@ async fn run_prompt(
 // ─── Slash commands ─────────────────────────────────────────────────────────
 
 /// Fetch and display account balances for cloud providers that support it.
-/// OpenAI exposes no credit-balance endpoint to ordinary API keys: the legacy
-/// `/dashboard/billing/*` routes require a browser session key, and the Costs
-/// API requires an admin key carrying the `api.usage.read` scope. So report
-/// month-to-date *spend* instead of a balance, and say plainly when the key
-/// cannot see it.
+/// OpenAI exposes no credit-balance endpoint at all — not to ordinary keys, and
+/// not to admin keys either (every `/v1/organization/*credit*` path 404s, and the
+/// legacy `/dashboard/billing/*` routes answer only to a browser session key).
+/// Remaining credit therefore cannot be fetched; it can only be derived from a
+/// top-up figure the user records themselves. So:
+///
+///   * with `credits` + `credits_since` set — show remaining = credits − spend
+///   * otherwise                            — show calendar month-to-date spend
+///
+/// Both go through the Costs API, which needs an admin key with `api.usage.read`.
 fn show_openai_spend(client: &reqwest::blocking::Client, resolved: &crate::config::ResolvedCloud) {
-    const LABEL: &str = "  \x1b[36mOpenAI (spend MTD)\x1b[0m";
+    const LABEL: &str = "  \x1b[36mOpenAI\x1b[0m";
 
     if resolved.admin_key.is_empty() {
         eprintln!(
@@ -911,66 +917,109 @@ or OPENAI_ADMIN_KEY\x1b[0m"
         return;
     }
 
-    // Start of the current UTC month, as a Unix timestamp.
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let days_into_month = (now / 86_400) % 30; // coarse; the API buckets by day
-    let start_time = now.saturating_sub(days_into_month * 86_400);
+    // Window start: the top-up date when tracking credits, else the 1st of the
+    // current month. Note this is a real calendar boundary, not now-minus-N-days.
+    let (start_time, since_label) = match parse_since(&resolved.credits_since) {
+        Some(ts) if resolved.credits.is_some() => (ts, resolved.credits_since.clone()),
+        _ => {
+            let first = chrono::Utc::now()
+                .date_naive()
+                .with_day(1)
+                .unwrap_or_else(|| chrono::Utc::now().date_naive());
+            (
+                first.and_hms_opt(0, 0, 0).unwrap_or_default().and_utc().timestamp(),
+                first.format("%Y-%m-%d").to_string(),
+            )
+        }
+    };
 
     let url = format!(
-        "https://api.openai.com/v1/organization/costs?start_time={start_time}&limit=31"
+        "https://api.openai.com/v1/organization/costs?start_time={start_time}&limit=180"
     );
-    match client
+    let resp = match client
         .get(&url)
         .header("authorization", format!("Bearer {}", resolved.admin_key))
-        .timeout(std::time::Duration::from_secs(5))
+        .timeout(std::time::Duration::from_secs(8))
         .send()
     {
-        Ok(resp) if resp.status().is_success() => {
-            let json: serde_json::Value = match resp.json() {
-                Ok(j) => j,
-                Err(e) => {
-                    eprintln!("{LABEL}  \x1b[33m{e}\x1b[0m");
-                    return;
-                }
-            };
-            // Buckets → results → amount.value, summed.
-            let total: f64 = json["data"]
-                .as_array()
-                .map(|buckets| {
-                    buckets
-                        .iter()
-                        .filter_map(|b| b["results"].as_array())
-                        .flatten()
-                        .filter_map(|r| r["amount"]["value"].as_f64())
-                        .sum()
-                })
-                .unwrap_or(0.0);
-            let currency = json["data"]
-                .as_array()
-                .and_then(|b| b.first())
-                .and_then(|b| b["results"].as_array())
-                .and_then(|r| r.first())
-                .and_then(|r| r["amount"]["currency"].as_str())
-                .unwrap_or("usd")
-                .to_uppercase();
-            let sym = if currency == "USD" { "$" } else { "" };
-            eprintln!("{LABEL}  {sym}{total:.2} {currency}");
-        }
-        Ok(resp) if resp.status().as_u16() == 401 || resp.status().as_u16() == 403 => {
-            eprintln!(
-                "{LABEL}  \x1b[33madmin key lacks api.usage.read scope\x1b[0m"
-            );
-        }
-        Ok(resp) => {
-            eprintln!("{LABEL}  \x1b[33mHTTP {}\x1b[0m", resp.status());
-        }
+        Ok(r) => r,
         Err(e) => {
             eprintln!("{LABEL}  \x1b[33m{e}\x1b[0m");
+            return;
+        }
+    };
+
+    match resp.status().as_u16() {
+        200 => {}
+        401 | 403 => {
+            eprintln!("{LABEL}  \x1b[33madmin key lacks the api.usage.read scope\x1b[0m");
+            return;
+        }
+        code => {
+            eprintln!("{LABEL}  \x1b[33mHTTP {code}\x1b[0m");
+            return;
         }
     }
+
+    let json: serde_json::Value = match resp.json() {
+        Ok(j) => j,
+        Err(e) => {
+            eprintln!("{LABEL}  \x1b[33m{e}\x1b[0m");
+            return;
+        }
+    };
+
+    // Buckets → results → amount.value, summed across the window.
+    let buckets = json["data"].as_array();
+    let spend: f64 = buckets
+        .map(|bs| {
+            bs.iter()
+                .filter_map(|b| b["results"].as_array())
+                .flatten()
+                .filter_map(|r| r["amount"]["value"].as_f64())
+                .sum()
+        })
+        .unwrap_or(0.0);
+    let currency = buckets
+        .and_then(|bs| bs.iter().find_map(|b| b["results"].as_array()))
+        .and_then(|r| r.first())
+        .and_then(|r| r["amount"]["currency"].as_str())
+        .unwrap_or("usd")
+        .to_uppercase();
+    let sym = if currency == "USD" { "$" } else { "" };
+
+    // The API pages; a truncated window would silently understate spend.
+    let truncated = json["has_more"].as_bool().unwrap_or(false);
+    let note = if truncated { "  \x1b[33m(partial — more pages)\x1b[0m" } else { "" };
+
+    match resolved.credits {
+        Some(credits) => {
+            let left = credits - spend;
+            let colour = if left <= 0.0 {
+                "\x1b[31m"
+            } else if left < credits * 0.15 {
+                "\x1b[33m"
+            } else {
+                "\x1b[32m"
+            };
+            eprintln!(
+                "{LABEL}  {colour}{sym}{left:.2}\x1b[0m left  \
+(spent {sym}{spend:.2} of {sym}{credits:.2} since {since_label}){note}"
+            );
+        }
+        None => {
+            eprintln!(
+                "{LABEL}  {sym}{spend:.2} {currency} spent since {since_label}  \
+\x1b[90m(no balance API — set credits/credits_since for remaining)\x1b[0m{note}"
+            );
+        }
+    }
+}
+
+/// Parse a `YYYY-MM-DD` top-up date into a UTC Unix timestamp.
+fn parse_since(s: &str) -> Option<i64> {
+    let d = chrono::NaiveDate::parse_from_str(s.trim(), "%Y-%m-%d").ok()?;
+    Some(d.and_hms_opt(0, 0, 0)?.and_utc().timestamp())
 }
 
 fn show_cloud_balances(config: &Config) {
@@ -1439,4 +1488,39 @@ pub async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
 
     eprintln!("\x1b[90mGoodbye.\x1b[0m");
     Ok(())
+}
+
+#[cfg(test)]
+mod balance_tests {
+    use super::*;
+
+    #[test]
+    fn parses_topup_date() {
+        // 2026-08-01T00:00:00Z
+        assert_eq!(parse_since("2026-08-01"), Some(1_785_542_400));
+        assert_eq!(parse_since("  2026-08-01  "), Some(1_785_542_400));
+    }
+
+    #[test]
+    fn rejects_unparseable_dates() {
+        assert_eq!(parse_since(""), None);
+        assert_eq!(parse_since("august"), None);
+        assert_eq!(parse_since("2026-08"), None);
+        assert_eq!(parse_since("01-08-2026"), None);
+    }
+
+    /// The spend window must start on the 1st of the month. An earlier version
+    /// approximated it as `now - ((days_since_epoch) % 30) * 86400`, which drifts
+    /// — on 2026-08-18 it started the window on Aug 5 and silently dropped the
+    /// first four days of spend.
+    #[test]
+    fn month_start_is_the_first_not_a_rolling_window() {
+        let d = chrono::NaiveDate::from_ymd_opt(2026, 8, 18).unwrap();
+        let first = d.with_day(1).unwrap();
+        assert_eq!(first, chrono::NaiveDate::from_ymd_opt(2026, 8, 1).unwrap());
+        assert_eq!(
+            first.and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp(),
+            parse_since("2026-08-01").unwrap()
+        );
+    }
 }
