@@ -99,7 +99,7 @@ model = "kimi-k3"
 [cloud.openai]
 api_key = "sk-..."
 model = "gpt-5.4"
-# admin_key = "sk-admin-..."      # optional, /usage spend reporting only
+# admin_key = "sk-admin-..."      # /usage spend; needs api.usage.read scope
 # credits = 50.00                 # optional, credit balance
 # credits_since = "2026-08-01"    # optional, date that balance was true
 ```
@@ -109,24 +109,6 @@ Same shape for `kimi-think`, `deepseek`, `deepseek-think` and `gemini`; add
 built-in preset defaults — that is how you run a newer model than the preset ships with.
 
 Environment variables (`MYCLI_MODEL`, `MYCLI_API_KEY`, `MOONSHOT_API_KEY`, `DEEPSEEK_API_KEY`, `GEMINI_API_KEY`, `OPENAI_API_KEY`, `OPENAI_ADMIN_KEY`) are also supported.
-
-### `/usage` — cloud balances
-
-`/usage` queries each configured provider:
-
-| Provider | Reports | Key needed |
-|----------|---------|------------|
-| DeepSeek | balance (topped-up / granted) | normal API key |
-| Kimi (Moonshot) | balance (cash / credits) | normal API key |
-| OpenAI | **month-to-date spend** | `admin_key` (`sk-admin-…`, `api.usage.read` scope) |
-
-OpenAI exposes no credit-balance endpoint to any key type, so remaining credit must be
-derived: set `credits` to the balance shown on your billing page and `credits_since` to the
-date you read it. Without them, `/usage` falls back to month-to-date spend.
-
-```
-OpenAI  $48.62 left  (spent $1.38 of $50.00 since 2026-08-01)
-```
 
 ---
 
