@@ -362,6 +362,31 @@ BENCH_FILE=bench_v2.toml ./bench.sh gemma-4-26b  # enhanced suite, specific mode
 - `bench.toml` — Original 12 tests across 4 personas
 - `bench_v2.toml` — Enhanced 45 tests: code (9), math (9), agentic (8), reasoning (7), blueteam (5), redteam (3), data (2), meta (2)
 
+### Refusal comparison
+
+`bench.sh` measures whether a model *can* do a task. [`refusal_test.py`](bench/refusal_test.py)
+measures whether it *will* — it runs 8 HTB/OSCP probes against two or more oMLX models and
+writes a side-by-side report of every full response.
+
+```bash
+cd bench
+./refusal_test.py --open                # run probes, write JSON + HTML + MD, then open
+./refusal_test.py --models A B C        # any oMLX models
+./refusal_test.py --report-only         # rebuild reports from saved JSON, no re-run
+```
+
+[![Refusal report](bench/refusal-report.png)](bench/refusal_report.example.md)
+
+Scored on three axes, because refusal alone is a weak signal — a model can "comply" and
+still return a vague non-answer: **verdict** (refusal phrase in the opening), **blocks**
+(fenced code actually produced) and **hedges** (ethics boilerplate that burns tokens
+without adding tradecraft).
+
+Sample output: [`refusal_report.example.md`](bench/refusal_report.example.md) renders in the
+browser; [`refusal_report.example.html`](bench/refusal_report.example.html) is the styled
+version pictured above. See [`bench/README.md`](bench/README.md#refusal-comparison-refusal_testpy)
+for the probe list and the two traps worth knowing.
+
 ---
 
 ## Architecture
