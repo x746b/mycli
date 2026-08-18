@@ -34,11 +34,11 @@ api_key = "omlx-xxxxxxxxxxxxxxxxxxxx"
 
 [cloud.kimi]
 api_key = "sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-model = "kimi-k2.5"
+model = "kimi-k3"
 
 [cloud.kimi-think]
 api_key = "sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-model = "kimi-k2.5"
+model = "kimi-k3"
 max_tokens = 32768
 
 [cloud.deepseek]
@@ -55,4 +55,4 @@ model = "gemini-3.1-pro-preview"
 
 [cloud.openai]
 api_key = "sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-model = "gpt-4o"
+model = "gpt-5.4"

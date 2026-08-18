@@ -219,6 +219,24 @@ fn is_restricted_openai_model(model: &str) -> bool {
         || name.starts_with("o4")
 }
 
+/// GPT-5 models refuse function tools on /v1/chat/completions unless reasoning
+/// is explicitly switched off: "Function tools with reasoning_effort are not
+/// supported ... use /v1/responses or set reasoning_effort to 'none'". Sending
+/// `none` alongside tools is accepted by every gpt-5.x chat model.
+///
+/// Deliberately narrower than [`is_restricted_openai_model`]: the o-series
+/// accepts tools together with a real reasoning effort, and does not take
+/// `none` as a value, so it must not be included here.
+fn needs_reasoning_effort_none(model: &str) -> bool {
+    let name = model
+        .rsplit(['/', ':'])
+        .next()
+        .unwrap_or(model)
+        .to_ascii_lowercase();
+
+    name.starts_with("gpt-5")
+}
+
 #[async_trait::async_trait]
 impl Provider for OpenAi {
     fn name(&self) -> &str {
@@ -286,6 +304,12 @@ impl Provider for OpenAi {
             if !restricted {
                 body["temperature"] = serde_json::json!(temp);
             }
+        }
+
+        // Tool use and reasoning are mutually exclusive on chat/completions for
+        // the gpt-5 family, so trade reasoning away to keep tools working.
+        if !request.tools.is_empty() && needs_reasoning_effort_none(&model) {
+            body["reasoning_effort"] = serde_json::json!("none");
         }
 
         if !request.tools.is_empty() {
@@ -743,6 +767,21 @@ mod tests {
         assert!(is_restricted_openai_model("o1-preview"));
         assert!(is_restricted_openai_model("o3-mini"));
         assert!(is_restricted_openai_model("o4-mini"));
+    }
+
+    #[test]
+    fn gpt5_disables_reasoning_for_tool_use() {
+        assert!(needs_reasoning_effort_none("gpt-5.6-sol"));
+        assert!(needs_reasoning_effort_none("gpt-5.6-luna"));
+        assert!(needs_reasoning_effort_none("gpt-5.6-terra"));
+        assert!(needs_reasoning_effort_none("gpt-5.5"));
+        assert!(needs_reasoning_effort_none("gpt-5.4"));
+        // o-series takes a real effort value and rejects "none".
+        assert!(!needs_reasoning_effort_none("o3-mini"));
+        assert!(!needs_reasoning_effort_none("o1-preview"));
+        // Non-OpenAI backends are untouched.
+        assert!(!needs_reasoning_effort_none("kimi-k3"));
+        assert!(!needs_reasoning_effort_none("deepseek-v4-pro"));
     }
 
     #[test]

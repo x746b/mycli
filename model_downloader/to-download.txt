@@ -1,0 +1,11 @@
+# Models to download — local Mac (~/AI/models)
+# One HuggingFace repo per line
+#
+# Usage:
+#   ./hf-download.sh              # download all
+#   ./hf-download.sh --info       # show sizes first
+#   ./hf-download.sh --dry-run    # preview without downloading
+
+# Nemotron 3 Super 120B — MLX 5-bit (best quality for 128GB Mac)
+# ~83 GB, 2.7K downloads, ~94% coding accuracy
+mlx-community/NVIDIA-Nemotron-3-Super-120B-A12B-5bit

@@ -13,12 +13,12 @@
 //!
 //! [cloud.kimi]
 //! api_key = "sk-xxx"
-//! model = "kimi-k2.5"
+//! model = "kimi-k3"
 //!
 //! [cloud.kimi-think]
 //! api_key = "sk-xxx"
 //! base_url = "https://api.moonshot.ai/v1"
-//! model = "kimi-k2.5"
+//! model = "kimi-k3"
 //! max_tokens = 32768
 //!
 //! [cloud.deepseek]
@@ -137,7 +137,7 @@ fn builtin_preset(name: &str) -> Option<BuiltinPreset> {
     match name {
         "kimi" | "kimi-think" | "moonshot" => Some(BuiltinPreset {
             base_url: "https://api.moonshot.ai/v1",
-            default_model: "kimi-k2.5",
+            default_model: "kimi-k3",
             env_key: "MOONSHOT_API_KEY",
             max_tokens: 16384,
         }),
@@ -155,7 +155,7 @@ fn builtin_preset(name: &str) -> Option<BuiltinPreset> {
         }),
         "openai" => Some(BuiltinPreset {
             base_url: "https://api.openai.com/v1",
-            default_model: "gpt-4o",
+            default_model: "gpt-5.4",
             env_key: "OPENAI_API_KEY",
             max_tokens: 16384,
         }),
