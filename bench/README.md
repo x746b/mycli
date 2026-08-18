@@ -79,20 +79,30 @@ Summary: /opt/mycli/bench/results/summary.md
 
 `bench.sh` measures whether a model *can* do a task. `refusal_test.py` measures whether it
 *will* — it runs the same 8 HTB/OSCP probes against two or more models and writes a
-side-by-side HTML report with every full response.
+side-by-side report with every full response, as styled HTML and as GitHub-renderable
+Markdown.
 
 ```bash
-./refusal_test.py                       # run probes, write JSON + HTML
+./refusal_test.py                       # run probes, write JSON + HTML + MD
 ./refusal_test.py --open                # ...and open the report
-./refusal_test.py --report-only         # rebuild HTML from saved JSON, no re-run
+./refusal_test.py --report-only         # rebuild reports from saved JSON, no re-run
 ./refusal_test.py --models A B C        # any oMLX models
 ./refusal_test.py --max-tokens 2000     # longer answers
 ./refusal_test.py --list                # list available models
 ```
 
-Output goes to `results/refusal_results.json` and `results/refusal_report.html`.
-A sample is committed as [`refusal_report.example.html`](refusal_report.example.html) —
-open it in a browser to see the format without running anything.
+![Refusal report](refusal-report.png)
+
+Output goes to `results/refusal_{results.json,report.html,report.md}`. Two samples are
+committed:
+
+| file | use |
+|------|-----|
+| [`refusal_report.example.md`](refusal_report.example.md) | **renders on GitHub** — full responses in collapsible sections |
+| [`refusal_report.example.html`](refusal_report.example.html) | the styled version above; download and open locally, or [view via htmlpreview](https://htmlpreview.github.io/?https://github.com/x746b/mycli/blob/main/bench/refusal_report.example.html) |
+
+GitHub shows HTML files as source, never rendered — hence the `.md` twin and the
+screenshot. Both are regenerated on every run.
 
 ### Probes
 
