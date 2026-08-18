@@ -200,6 +200,25 @@ fn convert_messages(messages: &[Message]) -> Vec<serde_json::Value> {
     api_messages
 }
 
+/// The GPT-5 family and the o-series reasoning models dropped `max_tokens` in
+/// favour of `max_completion_tokens`, and only accept the default sampling
+/// temperature. Every other OpenAI-compatible backend we talk to (oMLX, Ollama,
+/// DeepSeek, Moonshot, Gemini-compat) still expects `max_tokens`, so this is
+/// gated on the model name rather than applied everywhere.
+fn is_restricted_openai_model(model: &str) -> bool {
+    // Routers and proxies prefix names like "openai/gpt-5.4"; keep the last segment.
+    let name = model
+        .rsplit(['/', ':'])
+        .next()
+        .unwrap_or(model)
+        .to_ascii_lowercase();
+
+    name.starts_with("gpt-5")
+        || name.starts_with("o1")
+        || name.starts_with("o3")
+        || name.starts_with("o4")
+}
+
 #[async_trait::async_trait]
 impl Provider for OpenAi {
     fn name(&self) -> &str {
@@ -246,16 +265,27 @@ impl Provider for OpenAi {
 
         api_messages.extend(convert_messages(&request.messages));
 
+        let restricted = is_restricted_openai_model(&model);
+        let token_param = if restricted {
+            "max_completion_tokens"
+        } else {
+            "max_tokens"
+        };
+
         let mut body = serde_json::json!({
             "model": model,
             "messages": api_messages,
-            "max_tokens": request.max_tokens,
             "stream": true,
             "stream_options": { "include_usage": true },
         });
+        body[token_param] = serde_json::json!(request.max_tokens);
 
+        // Restricted models reject any explicit temperature, including from
+        // effort levels and the compaction pass.
         if let Some(temp) = request.temperature {
-            body["temperature"] = serde_json::json!(temp);
+            if !restricted {
+                body["temperature"] = serde_json::json!(temp);
+            }
         }
 
         if !request.tools.is_empty() {
@@ -698,5 +728,29 @@ impl OpenAiBuilder {
             default_model: self.model.unwrap_or_else(|| "gpt-4o".to_string()),
             client: reqwest::Client::new(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn restricted_models_use_completion_tokens() {
+        assert!(is_restricted_openai_model("gpt-5.4"));
+        assert!(is_restricted_openai_model("gpt-5"));
+        assert!(is_restricted_openai_model("openai/gpt-5-mini"));
+        assert!(is_restricted_openai_model("o1-preview"));
+        assert!(is_restricted_openai_model("o3-mini"));
+        assert!(is_restricted_openai_model("o4-mini"));
+    }
+
+    #[test]
+    fn other_backends_keep_max_tokens() {
+        assert!(!is_restricted_openai_model("gpt-4o"));
+        assert!(!is_restricted_openai_model("kimi-k3"));
+        assert!(!is_restricted_openai_model("deepseek-reasoner"));
+        assert!(!is_restricted_openai_model("gemini-3.1-pro-preview"));
+        assert!(!is_restricted_openai_model("mlx-community_Qwen3.8-27B-mxfp8"));
     }
 }
