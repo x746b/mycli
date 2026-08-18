@@ -1,6 +1,6 @@
 # MyCLI
 
-Lightweight AI coding CLI for testing LLM capabilities — especially local models running on [oMLX](https://github.com/jundot/omlx). Cloud providers (Kimi K2.5, DeepSeek, Gemini, OpenAI) supported as first-class fallback.
+Lightweight AI coding CLI for testing LLM capabilities — especially local models running on [oMLX](https://github.com/jundot/omlx). Cloud providers (Kimi, DeepSeek, Gemini, OpenAI) supported as first-class fallback.
 
 ```bash
 $ mycli
@@ -113,6 +113,7 @@ Config lives in `~/.mycli/config.toml` (global) and `.mycli/config.toml` (projec
 # ─── Local (oMLX) ──────────────────────────────────────────
 api_key = "your-omlx-key"
 # base_url defaults to http://127.0.0.1:8000/v1
+# model = "mlx-community_Qwen3.8-27B-mxfp8"   # empty/unset = auto-detect first loaded
 
 # ─── Persona & tool tier ───────────────────────────────────
 # persona = "code"         # code, redteam, blueteam, data, math, agentic
@@ -121,18 +122,19 @@ api_key = "your-omlx-key"
 
 # ─── MCP servers ───────────────────────────────────────────
 [[mcp]]
-name = "my-server"
+name = "command-vault"
 command = "/path/to/venv/bin/python"
-args = ["-m", "my_mcp.server"]
+args = ["-m", "command_vault.server"]
+env = { VAULT_DB = "/path/to/vault.db", VAULT_READONLY = "1" }
 
 # ─── Cloud models ──────────────────────────────────────────
 [cloud.kimi]
 api_key = "sk-..."
-model = "kimi-k2.5"
+model = "kimi-k3"
 
 [cloud.kimi-think]
 api_key = "sk-..."
-model = "kimi-k2.5"
+model = "kimi-k3"
 max_tokens = 32768
 
 [cloud.deepseek]
@@ -149,8 +151,11 @@ model = "gemini-3.1-pro-preview"
 
 [cloud.openai]
 api_key = "sk-..."
-model = "gpt-4o"
+model = "gpt-5.4"
 ```
+
+`model` and `max_tokens` in a profile override the built-in preset defaults below —
+that is how you run a newer model than the preset ships with.
 
 Environment variables (`MYCLI_MODEL`, `MYCLI_API_KEY`, `MOONSHOT_API_KEY`, `DEEPSEEK_API_KEY`, `GEMINI_API_KEY`, `OPENAI_API_KEY`) are also supported.
 
@@ -172,7 +177,7 @@ oMLX - LLM inference, optimized for your Mac
 ```bash
 mycli                             # auto-detect local oMLX model
 mycli -m Trinity-Mini-8bit        # specific local model
-mycli --cloud kimi                # start with cloud Kimi K2.5
+mycli --cloud kimi                # start with cloud Kimi
 mycli -t simple                   # minimal tools for small models
 ```
 
@@ -280,10 +285,10 @@ Supported: Kimi/Moonshot, DeepSeek. API keys auto-detected from config or enviro
 
 ### Provider Support
 - **oMLX** (local) — auto-detects loaded models, interactive picker
-- **Kimi K2.5** — with and without thinking mode
+- **Kimi K3** — with and without thinking mode
 - **DeepSeek** — chat and reasoner models
 - **Google Gemini** — via AI Studio OpenAI-compatible endpoint
-- **OpenAI** — GPT-4o and compatible
+- **OpenAI** — GPT-5.x (max_completion_tokens handled) and GPT-4o
 - Any OpenAI-compatible endpoint via `--base-url`
 
 ### Tool Capabilities
@@ -318,13 +323,18 @@ Local models often get `old_string` wrong in edit operations. MyCLI handles this
 | Name | Provider | Default Model | Max Tokens |
 |------|----------|---------------|------------|
 | `kimi` | Moonshot AI | kimi-k2.5 | 16,384 |
-| `kimi-think` | Moonshot AI | kimi-k2.5 | 32,768 |
+| `kimi-think` | Moonshot AI | kimi-k2.5 | 16,384 |
 | `deepseek` | DeepSeek | deepseek-chat | 8,192 |
 | `deepseek-think` | DeepSeek | deepseek-reasoner | 8,192 |
 | `gemini` | Google AI Studio | gemini-3.1-pro-preview | 65,536 |
 | `openai` | OpenAI | gpt-4o | 16,384 |
 
-Presets provide base URL, default model, and max tokens automatically. Just add your API key.
+Presets provide base URL, default model, max tokens, and the env-var name automatically —
+just add your API key. `moonshot`, `google`, and `aistudio` are accepted aliases for `kimi`
+and `gemini`.
+
+These are the defaults compiled into `builtin_preset()`. They lag the newest model ids on
+purpose — set `model` in your `[cloud.*]` profile to override, as in the config example above.
 
 ---
 
