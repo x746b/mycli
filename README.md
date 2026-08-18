@@ -165,10 +165,10 @@ Environment variables (`MYCLI_MODEL`, `MYCLI_API_KEY`, `MOONSHOT_API_KEY`, `DEEP
 ### oMLX backend - locall LLM inference
 
 ```bash
-omlx serve --model-dir ~/models --paged-ssd-cache-dir ~/.omlx/cache --port 8000
+omlx serve --model-dir ~/AI/models --paged-ssd-cache-dir ~/.omlx/cache --port 8000
 oMLX - LLM inference, optimized for your Mac
 ├─ https://github.com/jundot/omlx
-└─ Version: 0.3.4
+└─ Version: 0.6.1
 ```
 
 ### REPL
@@ -314,26 +314,6 @@ Local models often get `old_string` wrong in edit operations. MyCLI handles this
 - **Permission system** — interactive approval for write/execute operations, or `-y` to auto-approve
 - **Cost guard hook** — set `cost_limit` in config to cap cloud API spend per session
 - **Tool tiers** — limit what tools the model can access
-
----
-
-## Built-in Cloud Presets
-
-| Name | Provider | Default Model | Max Tokens |
-|------|----------|---------------|------------|
-| `kimi` | Moonshot AI | kimi-k2.5 | 16,384 |
-| `kimi-think` | Moonshot AI | kimi-k2.5 | 16,384 |
-| `deepseek` | DeepSeek | deepseek-chat | 8,192 |
-| `deepseek-think` | DeepSeek | deepseek-reasoner | 8,192 |
-| `gemini` | Google AI Studio | gemini-3.1-pro-preview | 65,536 |
-| `openai` | OpenAI | gpt-4o | 16,384 |
-
-Presets provide base URL, default model, max tokens, and the env-var name automatically —
-just add your API key. `moonshot`, `google`, and `aistudio` are accepted aliases for `kimi`
-and `gemini`.
-
-These are the defaults compiled into `builtin_preset()`. They lag the newest model ids on
-purpose — set `model` in your `[cloud.*]` profile to override, as in the config example above.
 
 ---
 
