@@ -15,7 +15,7 @@ $ mycli
              __/ |                
             |___/                       
              
-  omlx | gemma-4-31b-it-4bit | tools:medium | max_turns:30
+  omlx | mlx-community_Qwen3.8-27B-mxfp8 | tools:medium | max_turns:30
   Type /help for commands, Ctrl+C to cancel, Ctrl+D to exit
 
 > /help
@@ -68,8 +68,7 @@ I can assist with:
 
 What are you working on today?
 
->
-gemma-4-31b-it-4bit | omlx | redteam | ctx:3% | in:1.1k out:229 | ~/labs/tmp
+> mlx-community_Qwen3.8-27B-mxfp8 | omlx | redteam | ctx:3% | in:1.1k out:229 | ~/labs/tmp
 ```
 
 ```bash
@@ -77,7 +76,7 @@ gemma-4-31b-it-4bit | omlx | redteam | ctx:3% | in:1.1k out:229 | ~/labs/tmp
 mycli -t simple -m RedSage-8B          
 
 # offensive security persona with full toolset support and bigger model
-mycli -p redteam -t full -m gemma-4-31b-it-4bit "cybersec prompt"    
+mycli -p redteam -t full -m mlx-community_Qwen3.8-27B-mxfp8 "cybersec prompt"    
 ```
 
 ** ~ 5MB static binary** | **Rust** | **34 tools** | **3 tool tiers** | **6 personas** | **MCP support** | **Hot-swappable models & providers**
@@ -263,7 +262,7 @@ Switch with `/persona` in the REPL, `--persona` / `-p` CLI flag, or `persona = "
 Persistent bottom bar showing session info at a glance:
 
 ```
- gemma-4-26B-A4B | omlx | redteam | ctx:3% | in:1.0k out:46 | ~/project
+ mlx-community_Qwen3.8-27B-mxfp8 | omlx | redteam | ctx:3% | in:1.0k out:46 | ~/project
 ```
 
 - **ctx%** — context window fill based on last turn's input tokens (color-coded: green/yellow/red)
@@ -361,11 +360,11 @@ MyCLI includes a model benchmark suite for comparing local LLM capabilities acro
 
 ```bash
 cd bench
-./bench.sh                                      # run all oMLX models (bench.toml, 12 tests)
-./bench.sh WhiteRabbit                           # filter by model name
-BENCH_FILE=bench_v2.toml ./bench.sh              # enhanced suite (45 tests, all 6 personas)
-BENCH_FILE=bench_v2.toml ./bench.sh gemma-4-26b  # enhanced suite, specific model
-./grade.sh                                       # auto-grade results via DeepSeek API
+./bench.sh                                                            # run all oMLX models (bench.toml, 12 tests)
+./bench.sh WhiteRabbit                                                # filter by model name
+BENCH_FILE=bench_v2.toml ./bench.sh                                   # enhanced suite (45 tests, all 6 personas)
+BENCH_FILE=bench_v2.toml ./bench.sh mlx-community_Qwen3.8-27B-mxfp8   # enhanced suite, specific model
+./grade.sh                                                            # auto-grade results via DeepSeek API
 ```
 
 **Test suites:**
