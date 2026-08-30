@@ -12,6 +12,17 @@ const SUCCESS: Color = Color::Green;
 const ERROR: Color = Color::Red;
 const TOOL_BADGE: Color = Color::Magenta;
 
+/// Emit model output verbatim instead of rendering it as markdown.
+/// Enabled with MYCLI_RAW=1 (any value except empty or "0").
+fn raw_mode() -> bool {
+    static RAW: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *RAW.get_or_init(|| {
+        std::env::var("MYCLI_RAW")
+            .map(|v| !v.is_empty() && v != "0")
+            .unwrap_or(false)
+    })
+}
+
 pub struct Renderer {
     buffer: String,
     in_thinking: bool,
@@ -38,7 +49,10 @@ impl Renderer {
     }
 
     pub fn push_text(&mut self, delta: &str) {
-        if self.is_paused() || self.in_tool {
+        // In raw mode (benchmarks, piping to a file) we must not silently drop
+        // assistant text emitted while a tool is running — doing so made whole
+        // responses look empty in captured transcripts.
+        if self.is_paused() || (self.in_tool && !raw_mode()) {
             return; // Drop text while permission prompt or tool execution is active
         }
         if self.in_thinking {
@@ -160,6 +174,15 @@ impl Renderer {
     }
 
     fn print_markdown(&self, text: &str) {
+        // Raw mode emits the model's bytes verbatim. termimad rewrites markdown
+        // for display, which mangles technical output: `*` is consumed as
+        // emphasis (so `{{7*7}}` prints as `{{77}}`) and tables become box
+        // drawing. Benchmarks and redirected output need the original text.
+        if raw_mode() {
+            print!("{text}");
+            let _ = io::stdout().flush();
+            return;
+        }
         let mut skin = termimad::MadSkin::default();
         skin.code_block.set_fg(termimad::crossterm::style::Color::Cyan);
         skin.inline_code.set_fg(termimad::crossterm::style::Color::Cyan);
