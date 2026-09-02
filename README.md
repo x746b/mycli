@@ -148,6 +148,7 @@ mycli --cloud deepseek -y "refactor main.rs"   # auto-approve tools
 | `-t, --tools <tier>` | Tool tier: `simple`, `medium`, `full`, or `auto` (default) |
 | `-p, --persona <name>` | Persona: `code` (default), `redteam`, `blueteam`, `data`, `math`, `agentic` |
 | `-y, --yes` | Auto-approve all tool permissions |
+| `--no-thinking` | Start with the model's reasoning hidden (Ctrl+O toggles it) |
 | `--max-turns` | Max agent turns per prompt (default: 30) |
 | `-C, --directory` | Working directory |
 | `--show-config` | Print resolved config and exit |
@@ -169,8 +170,22 @@ mycli --cloud deepseek -y "refactor main.rs"   # auto-approve tools
 | `/persona <name>` | Switch persona (`code` / `redteam` / `blueteam` / `data` / `math` / `agentic`) |
 | `/usage` | Show cloud balances / spend (Kimi, DeepSeek, OpenAI) |
 | `/mcp` | Show MCP server status |
+| `/thinking` | Toggle reasoning display (same as Ctrl+O) |
+| `/thinking on\|off` | Force reasoning on or off |
+| `/thinking last` | Reprint the last reasoning block |
 | `/clear` | Clear screen |
 | `/exit` | Exit |
+
+### Keyboard shortcuts
+
+| Key | Action |
+|-----|--------|
+| `Ctrl+O` | Toggle reasoning display |
+| `Ctrl+C` | Interrupt the current turn (twice in quick succession to force exit) |
+| `Ctrl+D` | Exit |
+| `Tab` | Complete slash commands |
+| `←` `→` / `Tab` | Move between options in an approval dialog |
+| `Enter` / `Esc` | Confirm / deny an approval dialog |
 
 All pickers use the same interactive UI with arrow keys, Enter to confirm, Esc to cancel. All switches are hot — model, provider, tool tier, and persona can change mid-session without restarting.
 
@@ -209,16 +224,67 @@ Pre-configured system prompt profiles that shape the model's behavior:
 
 Switch with `/persona` in the REPL, `--persona` / `-p` CLI flag, or `persona = "redteam"` in config.
 
+### Reasoning Display
+
+Models that emit reasoning (Kimi, DeepSeek, and local models that return
+`reasoning_content`) have it streamed inline, dimmed behind a gutter:
+
+```
+  ✻ Thinking
+  │ Recursive-descent parser. Tokenizer first, then one function per
+  │ precedence level, so `*` binds before `+`.
+```
+
+Press **Ctrl+O** at the prompt to collapse it to a single live counter
+(`✻ Thinking… 412 chars · ctrl+o to show`) and again to bring it back. The
+setting applies from the next turn on; `/thinking last` reprints a block that
+already streamed collapsed. Start hidden with `--no-thinking`, or set
+`show_thinking = false` in the config.
+
+### Tool Calls
+
+Each call prints a header, then a result line with shape and timing plus a
+short output preview:
+
+```
+  ❯ Bash  cargo test
+  ⎿ ✓ 42 lines · 8.1s
+    running 10 tests
+    test ui::tests::truncate_is_utf8_safe ... ok
+    … +40 lines
+```
+
+Anything needing approval opens a dialog showing the *actual* request — the
+full command for Bash, a line diff for Edit, a content preview and byte count
+for Write — so a call can be judged without guessing at it:
+
+```
+╭─ ✎  Edit ──────────────────────────────────────────────────╮
+│ ~/opt/mycli/bin/parser.py                                  │
+│                                                            │
+│ -     assert evaluate('-(2+3) * -(4-1)') == -15.0          │
+│ +     assert evaluate('-(2+3) * -(4-1)') == 15.0           │
+│       print('ok')                                          │
+│                                                            │
+│ modifies files · approval required                         │
+╰────────────────────────────────────────────────────────────╯
+   Yes   Yes, don't ask again   No    ←→ move · enter confirm · esc deny
+```
+
+The dialog border is colour-coded by risk: cyan for read-only, yellow for
+writes and command execution, red for destructive operations.
+
 ### Status Bar
 
 Persistent bottom bar showing session info at a glance:
 
 ```
- mlx-community_Qwen3.8-27B-mxfp8 | omlx | redteam | ctx:3% | in:1.0k out:46 | ~/project
+ mlx-community_Qwen3.8-27B-mxfp8 · omlx · redteam · ctx 3% · in 1.0k out 46 · think:on · ~/project
 ```
 
 - **ctx%** — context window fill based on last turn's input tokens (color-coded: green/yellow/red)
 - **in/out** — cumulative billing token totals for the session
+- **think** — whether reasoning is being displayed
 - Token counters reset on model/provider switch
 
 ### Tool Capabilities

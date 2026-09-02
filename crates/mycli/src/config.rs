@@ -105,6 +105,10 @@ pub struct Config {
     /// Active persona: "code", "redteam", "blueteam", "data"
     #[serde(default = "default_persona")]
     pub persona: String,
+    /// Stream the model's reasoning to the terminal. Toggle at runtime with
+    /// Ctrl+O or `/thinking`.
+    #[serde(default = "default_true")]
+    pub show_thinking: bool,
     /// Working directory (not serialized)
     #[serde(skip)]
     pub working_dir: PathBuf,
@@ -112,6 +116,10 @@ pub struct Config {
 
 fn default_persona() -> String {
     "code".into()
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for Config {
@@ -129,6 +137,7 @@ impl Default for Config {
             mcp: Vec::new(),
             cloud: HashMap::new(),
             persona: "code".into(),
+            show_thinking: true,
             working_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
         }
     }
@@ -421,6 +430,9 @@ pub fn apply_cli_overrides(cli: &Cli, config: &mut Config) {
     }
     if let Some(p) = &cli.persona {
         config.persona = p.clone();
+    }
+    if cli.no_thinking {
+        config.show_thinking = false;
     }
 }
 

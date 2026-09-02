@@ -4,6 +4,8 @@
 mod config;
 mod render;
 mod repl;
+mod status;
+mod ui;
 
 use clap::Parser;
 
@@ -47,6 +49,10 @@ pub struct Cli {
     /// Auto-approve all tool permissions (no prompts)
     #[arg(long, short = 'y')]
     pub yes: bool,
+
+    /// Start with the model's reasoning hidden (toggle later with Ctrl+O)
+    #[arg(long)]
+    pub no_thinking: bool,
 
     /// Persona: code (default), redteam, blueteam, data
     #[arg(long, short = 'p', value_name = "PERSONA")]

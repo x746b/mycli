@@ -3,13 +3,15 @@
 use crate::config::{self, Config};
 use chrono::Datelike;
 use crate::render::{self, Renderer};
+use crate::status;
+use crate::ui::{self, ACCENT, BOLD, DIM, GREEN, RED, RESET, YELLOW};
 use crate::Cli;
 
 use cersei::Agent;
 use cersei::events::AgentEvent;
 use cersei_memory::manager::MemoryManager;
 use cersei_provider::OpenAi;
-use cersei_tools::permissions::{AllowAll, PermissionDecision, PermissionPolicy, PermissionRequest};
+use cersei_tools::permissions::{PermissionDecision, PermissionPolicy, PermissionRequest};
 use cersei_tools::PermissionLevel;
 use parking_lot::Mutex;
 use rustyline::completion::{Completer, Pair};
@@ -17,11 +19,13 @@ use rustyline::error::ReadlineError;
 use rustyline::highlight::Highlighter;
 use rustyline::hint::Hinter;
 use rustyline::validate::Validator;
-use rustyline::{Config as RlConfig, Editor, Helper};
+use rustyline::{
+    Cmd, ConditionalEventHandler, Config as RlConfig, Editor, EventHandler, Helper, KeyEvent,
+};
 use std::borrow::Cow;
 use std::collections::HashSet;
 use std::io::{self, Write};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
@@ -30,21 +34,59 @@ use tokio_util::sync::CancellationToken;
 /// Global flag: when true, the renderer should buffer output instead of printing.
 static PERMISSION_ACTIVE: AtomicBool = AtomicBool::new(false);
 
+/// Bumped once per tool call, when the policy has decided. Every tool the
+/// runner can execute passes through a policy, so this always advances; the
+/// renderer waits on it to keep the tool header below the approval dialog.
+static PERMISSION_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// Bumped by the renderer when it begins handling a `ToolStart`, after every
+/// earlier event has been written. The interactive policy waits for it before
+/// drawing a dialog, so an approval panel can never appear in the middle of the
+/// previous tool's result block.
+static TOOL_START_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// Approve everything (`--yes`). Wraps the decision in the same handshake as
+/// the interactive policy so tool headers stay ordered in both modes.
+struct AutoApprove;
+
+#[async_trait::async_trait]
+impl PermissionPolicy for AutoApprove {
+    async fn check(&self, _request: &PermissionRequest) -> PermissionDecision {
+        PERMISSION_SEQ.fetch_add(1, Ordering::SeqCst);
+        PermissionDecision::Allow
+    }
+}
+
 struct InteractivePermissions {
     session_allowed: Mutex<HashSet<String>>,
+    /// Value of [`TOOL_START_SEQ`] as of the previous decision.
+    last_tool_start: Mutex<u64>,
 }
 
 impl InteractivePermissions {
     fn new() -> Self {
         Self {
             session_allowed: Mutex::new(HashSet::new()),
+            last_tool_start: Mutex::new(TOOL_START_SEQ.load(Ordering::SeqCst)),
         }
     }
-}
 
-#[async_trait::async_trait]
-impl PermissionPolicy for InteractivePermissions {
-    async fn check(&self, request: &PermissionRequest) -> PermissionDecision {
+    /// Wait (bounded) for the renderer to reach this call's `ToolStart`, so all
+    /// prior output is flushed before a dialog is drawn.
+    fn await_renderer(&self) {
+        let mut last = self.last_tool_start.lock();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        loop {
+            let now = TOOL_START_SEQ.load(Ordering::SeqCst);
+            if now != *last || std::time::Instant::now() >= deadline {
+                *last = now;
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    }
+
+    fn decide(&self, request: &PermissionRequest) -> PermissionDecision {
         match request.permission_level {
             PermissionLevel::None | PermissionLevel::ReadOnly => return PermissionDecision::Allow,
             PermissionLevel::Forbidden => {
@@ -57,8 +99,9 @@ impl PermissionPolicy for InteractivePermissions {
             return PermissionDecision::Allow;
         }
 
+        self.await_renderer();
         PERMISSION_ACTIVE.store(true, Ordering::SeqCst);
-        let decision = permission_prompt(&request.tool_name, &request.description);
+        let decision = permission_prompt(request);
         PERMISSION_ACTIVE.store(false, Ordering::SeqCst);
         match decision {
             'y' => PermissionDecision::AllowOnce,
@@ -73,36 +116,70 @@ impl PermissionPolicy for InteractivePermissions {
     }
 }
 
+#[async_trait::async_trait]
+impl PermissionPolicy for InteractivePermissions {
+    async fn check(&self, request: &PermissionRequest) -> PermissionDecision {
+        let decision = self.decide(request);
+        PERMISSION_SEQ.fetch_add(1, Ordering::SeqCst);
+        decision
+    }
+}
+
+/// Risk colour and verb for a permission level, used to tint the dialog.
+fn risk_style(level: PermissionLevel) -> (&'static str, &'static str) {
+    match level {
+        PermissionLevel::Dangerous => (RED, "destructive"),
+        PermissionLevel::Execute => (YELLOW, "runs a command"),
+        PermissionLevel::Write => (YELLOW, "modifies files"),
+        _ => (ACCENT, "reads only"),
+    }
+}
+
+/// Render the approval dialog: a panel showing the *actual* request (command
+/// text, file diff, content preview) rather than just the tool name.
+fn draw_permission_panel(req: &PermissionRequest) {
+    let (icon, _) = ui::tool_style(&req.tool_name);
+    let (color, verb) = risk_style(req.permission_level);
+
+    let mut panel = ui::Panel::new(format!("{icon}  {}", req.tool_name), color);
+    let inner = panel.inner_width();
+    for row in ui::tool_detail(&req.tool_name, &req.tool_input, inner) {
+        panel.row(row);
+    }
+    panel.blank();
+    panel.row(format!("{DIM}{verb} · approval required{RESET}"));
+
+    let mut stderr = io::stderr();
+    let _ = write!(stderr, "\r\n{}", panel.render());
+    let _ = stderr.flush();
+}
+
 /// Interactive permission prompt with ←→ / Tab selection.
-fn permission_prompt(tool_name: &str, description: &str) -> char {
+fn permission_prompt(req: &PermissionRequest) -> char {
     use crossterm::event::{self, Event, KeyCode, KeyEvent};
     use crossterm::{cursor, execute, terminal};
 
     let options: &[(char, &str)] = &[
         ('y', "Yes"),
+        ('s', "Yes, don't ask again"),
         ('n', "No"),
-        ('s', "Session-allow"),
     ];
     let mut sel: usize = 0;
-
-    let mut stderr = io::stderr();
 
     // Flush any pending output before showing the prompt
     let _ = io::stdout().flush();
     let _ = io::stderr().flush();
 
-    // Print tool info and options on two clean lines
-    let _ = write!(
-        stderr,
-        "\r\n\x1b[K  \x1b[33;1m? {tool_name}\x1b[0m \x1b[90m({description})\x1b[0m\r\n"
-    );
-    let _ = stderr.flush();
+    draw_permission_panel(req);
+
+    let mut stderr = io::stderr();
 
     if terminal::enable_raw_mode().is_err() {
         eprint!("  [Y]es [N]o [S]ession-allow: ");
         let _ = io::stderr().flush();
         let mut input = String::new();
         let _ = io::stdin().read_line(&mut input);
+        eprintln!();
         return input.trim().chars().next().unwrap_or('n');
     }
 
@@ -111,7 +188,7 @@ fn permission_prompt(tool_name: &str, description: &str) -> char {
     let result = loop {
         if let Ok(Event::Key(KeyEvent { code, .. })) = event::read() {
             match code {
-                KeyCode::Left => {
+                KeyCode::Left | KeyCode::BackTab => {
                     sel = if sel > 0 { sel - 1 } else { options.len() - 1 };
                     let _ = execute!(stderr, cursor::MoveUp(1), terminal::Clear(terminal::ClearType::CurrentLine));
                     draw_permission_options(&mut stderr, options, sel);
@@ -136,9 +213,12 @@ fn permission_prompt(tool_name: &str, description: &str) -> char {
     // Replace the options line with the outcome
     let _ = execute!(stderr, cursor::MoveUp(1), terminal::Clear(terminal::ClearType::CurrentLine));
     let label = match result {
-        'y' => "\x1b[32m  + Allowed\x1b[0m",
-        's' => "\x1b[32m  + Allowed for session\x1b[0m",
-        _ => "\x1b[31m  x Denied\x1b[0m",
+        'y' => format!("  {GREEN}✓ allowed{RESET}"),
+        's' => format!(
+            "  {GREEN}✓ allowed{RESET} {DIM}· {} won't ask again this session{RESET}",
+            req.tool_name
+        ),
+        _ => format!("  {RED}✗ denied{RESET}"),
     };
     eprintln!("{label}\r");
 
@@ -149,12 +229,12 @@ fn draw_permission_options(w: &mut impl io::Write, options: &[(char, &str)], sel
     let _ = write!(w, "\x1b[K  ");
     for (i, (_key, label)) in options.iter().enumerate() {
         if i == sel {
-            let _ = write!(w, " \x1b[33;7m {label} \x1b[0m");
+            let _ = write!(w, " \x1b[7m {label} \x1b[0m");
         } else {
-            let _ = write!(w, " \x1b[90m {label} \x1b[0m");
+            let _ = write!(w, " {DIM} {label} {RESET}");
         }
     }
-    let _ = write!(w, "\r\n");
+    let _ = write!(w, "   {DIM}←→ move · enter confirm · esc deny{RESET}\r\n");
     let _ = w.flush();
 }
 
@@ -168,7 +248,10 @@ struct MyHelper {
 impl MyHelper {
     fn new() -> Self {
         Self {
-            commands: vec!["/help", "/clear", "/model", "/models", "/cloud", "/tools", "/mcp", "/usage", "/persona", "/exit", "/quit"]
+            commands: vec![
+                "/help", "/clear", "/model", "/models", "/cloud", "/tools", "/mcp", "/usage",
+                "/persona", "/thinking", "/exit", "/quit",
+            ]
                 .into_iter()
                 .map(String::from)
                 .collect(),
@@ -217,6 +300,48 @@ impl Highlighter for MyHelper {
 }
 impl Validator for MyHelper {}
 impl Helper for MyHelper {}
+
+/// Ctrl+O at the prompt flips reasoning visibility.
+///
+/// The handler cannot print into the line being edited without corrupting it,
+/// so feedback goes to the status bar, which is drawn on the reserved bottom
+/// row between a cursor save/restore pair and is therefore safe to repaint at
+/// any time. The new setting applies to the next model turn; `/thinking last`
+/// prints a block that already streamed in collapsed form.
+struct ToggleThinking;
+
+impl ConditionalEventHandler for ToggleThinking {
+    fn handle(
+        &self,
+        _evt: &rustyline::Event,
+        _n: rustyline::RepeatCount,
+        _positive: bool,
+        _ctx: &rustyline::EventContext<'_>,
+    ) -> Option<Cmd> {
+        render::toggle_thinking();
+        status::draw();
+        Some(Cmd::Noop)
+    }
+}
+
+// ─── Prompt ─────────────────────────────────────────────────────────────────
+
+/// Blank line before the prompt, separating one turn from the next.
+fn prompt_gap() {
+    print!("\n");
+    let _ = io::stdout().flush();
+}
+
+/// The input prompt: an accent gutter bar and a chevron.
+///
+/// Deliberately borderless. rustyline owns the redraw of the input line and
+/// clears to end-of-line on every keystroke, so a box's right edge cannot
+/// survive typing, and its left edge cannot be repeated on the rows a wrapped
+/// or pasted input spills onto. A gutter that only ever occupies the first
+/// column stays correct in every one of those cases.
+fn prompt_line() -> String {
+    format!("  {ACCENT}▌{RESET} {ACCENT}{BOLD}›{RESET} ")
+}
 
 // ─── Build agent ────────────────────────────────────────────────────────────
 
@@ -363,145 +488,6 @@ fn draw_picker(w: &mut impl io::Write, models: &[String], sel: usize, current: &
         }
     }
     let _ = w.flush();
-}
-
-// ─── Status bar ─────────────────────────────────────────────────────────────
-
-struct StatusBar {
-    total_in: u64,
-    total_out: u64,
-    last_in: u64,
-    prev_cumulative_in: u64,
-    enabled: bool,
-}
-
-impl StatusBar {
-    fn new() -> Self {
-        Self {
-            total_in: 0,
-            total_out: 0,
-            last_in: 0,
-            prev_cumulative_in: 0,
-            enabled: false,
-        }
-    }
-
-    /// Reserve the bottom line by setting the scroll region.
-    fn setup(&mut self) {
-        if let Ok((_, rows)) = crossterm::terminal::size() {
-            let mut stderr = io::stderr();
-            // Set scroll region to rows 1..(rows-1), reserving the last line
-            let _ = write!(stderr, "\x1b[1;{}r", rows - 1);
-            // Move cursor into the scroll region
-            let _ = write!(stderr, "\x1b[{};1H", rows - 1);
-            let _ = stderr.flush();
-            self.enabled = true;
-        }
-    }
-
-    /// Draw the status bar content on the reserved bottom line.
-    fn draw(&self, model: &str, provider: &str, persona: &str, cwd: &std::path::Path) {
-        if !self.enabled {
-            return;
-        }
-        let (_cols, rows) = match crossterm::terminal::size() {
-            Ok(size) => size,
-            Err(_) => return,
-        };
-
-        let ctx_window = cersei_agent::compact::context_window_for_model(model);
-        // Use last turn's input tokens as proxy for current conversation size
-        let ctx_pct = if ctx_window > 0 && self.last_in > 0 {
-            (self.last_in as f64 / ctx_window as f64 * 100.0).min(100.0)
-        } else {
-            0.0
-        };
-
-        let cwd_str = cwd.display().to_string();
-        let home = dirs::home_dir().map(|h| h.display().to_string()).unwrap_or_default();
-        let short_cwd = if cwd_str.starts_with(&home) {
-            format!("~{}", &cwd_str[home.len()..])
-        } else {
-            cwd_str
-        };
-
-        fn fmt_tokens(n: u64) -> String {
-            if n >= 1_000_000 {
-                format!("{:.1}M", n as f64 / 1_000_000.0)
-            } else if n >= 1_000 {
-                format!("{:.1}k", n as f64 / 1_000.0)
-            } else {
-                n.to_string()
-            }
-        }
-
-        let ctx_color = if ctx_pct >= 80.0 {
-            "\x1b[31m"
-        } else if ctx_pct >= 50.0 {
-            "\x1b[33m"
-        } else {
-            "\x1b[32m"
-        };
-
-        let content = format!(
-            " {} | {} | {} | {}ctx:{:.0}%\x1b[0;7m | in:{} out:{} | {}",
-            model,
-            provider,
-            persona,
-            ctx_color,
-            ctx_pct,
-            fmt_tokens(self.total_in),
-            fmt_tokens(self.total_out),
-            short_cwd,
-        );
-
-        let mut stderr = io::stderr();
-        // Save cursor, jump to bottom line, draw, restore cursor
-        let _ = write!(
-            stderr,
-            "\x1b[s\x1b[{};1H\x1b[7m\x1b[K{}\x1b[0m\x1b[u",
-            rows, content
-        );
-        let _ = stderr.flush();
-    }
-
-    /// Reset token counters (on model/cloud switch).
-    fn reset_tokens(&mut self) {
-        self.total_in = 0;
-        self.total_out = 0;
-        self.last_in = 0;
-        self.prev_cumulative_in = 0;
-    }
-
-    /// Update token counts and redraw.
-    /// `last_in` = this turn's input tokens (≈ current conversation size for ctx%).
-    /// `total_in/out` = cumulative billing totals.
-    fn update_usage(&mut self, usage: &cersei_types::Usage, model: &str, provider: &str, persona: &str, cwd: &std::path::Path) {
-        self.total_in = usage.input_tokens;
-        self.total_out = usage.output_tokens;
-        // Last turn's input ≈ current conversation size
-        let delta = usage.input_tokens.saturating_sub(self.prev_cumulative_in);
-        if delta > 0 {
-            self.last_in = delta;
-        }
-        self.prev_cumulative_in = usage.input_tokens;
-        self.draw(model, provider, persona, cwd);
-    }
-
-    /// Restore the terminal scroll region to full screen.
-    fn teardown(&self) {
-        if !self.enabled {
-            return;
-        }
-        let mut stderr = io::stderr();
-        // Reset scroll region to full terminal
-        let _ = write!(stderr, "\x1b[r");
-        // Clear the status bar line
-        if let Ok((_, rows)) = crossterm::terminal::size() {
-            let _ = write!(stderr, "\x1b[{};1H\x1b[K", rows);
-        }
-        let _ = stderr.flush();
-    }
 }
 
 // ─── Personas ───────────────────────────────────────────────────────────────
@@ -762,7 +748,7 @@ async fn build_agent(config: &Config, cancel_token: CancellationToken) -> anyhow
         .model(&resolved_model);
 
     if config.auto_approve {
-        builder = builder.permission_policy(AllowAll);
+        builder = builder.permission_policy(AutoApprove);
     } else {
         builder = builder.permission_policy(InteractivePermissions::new());
     }
@@ -1136,6 +1122,7 @@ enum CommandResult {
     SwitchCloud(String),
     SwitchTier(String),
     SwitchPersona(String),
+    Thinking(String),
 }
 
 fn handle_command(cmd: &str, args: &str, config: &Config, current_model: &str) -> CommandResult {
@@ -1152,8 +1139,17 @@ fn handle_command(cmd: &str, args: &str, config: &Config, current_model: &str) -
             eprintln!("  /mcp               Show MCP server status");
             eprintln!("  /usage             Show cloud provider balances");
             eprintln!("  /persona           Show or switch persona (code/redteam/blueteam/data/math/agentic)");
+            eprintln!("  /thinking          Toggle reasoning display (same as ctrl+o)");
+            eprintln!("  /thinking on|off   Force reasoning on or off");
+            eprintln!("  /thinking last     Reprint the last reasoning block");
             eprintln!("  /clear             Clear screen");
             eprintln!("  /exit              Exit mycli");
+            eprintln!();
+            eprintln!("{ACCENT}Shortcuts:{RESET}");
+            eprintln!("  ctrl+o             Toggle reasoning display");
+            eprintln!("  ctrl+c             Interrupt the current turn (twice to force exit)");
+            eprintln!("  ctrl+d             Exit");
+            eprintln!("  tab                Complete slash commands");
             CommandResult::Continue
         }
         "model" | "models" => {
@@ -1284,6 +1280,7 @@ fn handle_command(cmd: &str, args: &str, config: &Config, current_model: &str) -
                 }
             }
         }
+        "thinking" | "think" => CommandResult::Thinking(args.trim().to_lowercase()),
         "clear" | "cls" => {
             print!("\x1b[2J\x1b[1;1H");
             let _ = io::stdout().flush();
@@ -1294,6 +1291,30 @@ fn handle_command(cmd: &str, args: &str, config: &Config, current_model: &str) -
             eprintln!("\x1b[90mUnknown command: /{cmd}. Type /help.\x1b[0m");
             CommandResult::Continue
         }
+    }
+}
+
+/// Apply `/thinking [on|off|last]`.
+///
+/// `last` exists because reasoning that already streamed in collapsed form
+/// cannot be un-collapsed in place — the renderer keeps the text so it can be
+/// reprinted on demand.
+fn apply_thinking_command(arg: &str, renderer: &mut Renderer) {
+    match arg {
+        "last" | "show" => {
+            if !renderer.replay_last_thinking() {
+                renderer.notice("no reasoning captured yet");
+            }
+        }
+        "on" | "off" => {
+            render::set_thinking_visible(arg == "on");
+            renderer.notice(&format!("reasoning {arg}"));
+        }
+        "" => {
+            let on = render::toggle_thinking();
+            renderer.notice(&format!("reasoning {}", if on { "on" } else { "off" }));
+        }
+        other => renderer.notice(&format!("unknown option '{other}' — use on, off, or last")),
     }
 }
 
@@ -1354,12 +1375,17 @@ pub async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
     }
 
     let mut config = config;
+    render::set_thinking_visible(config.show_thinking);
+    render::logo();
     let (mut agent, mut current_model) = build_agent(&config, cancel_token.clone()).await?;
+    render::session_info(&config, &current_model);
 
     // Single-shot mode
     if let Some(prompt) = &cli.prompt {
-        render::banner(&config, &current_model);
         let mut renderer = Renderer::new();
+        renderer.pause_flag = Some(&PERMISSION_ACTIVE);
+        renderer.decision_seq = Some(&PERMISSION_SEQ);
+        renderer.tool_start_seq = Some(&TOOL_START_SEQ);
         running.store(true, Ordering::Relaxed);
         let result = run_prompt(&agent, prompt, &mut renderer, true).await;
         running.store(false, Ordering::Relaxed);
@@ -1367,14 +1393,16 @@ pub async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
     }
 
     // REPL mode
-    render::banner(&config, &current_model);
-
     let rl_config = RlConfig::builder()
         .auto_add_history(true)
         .max_history_size(1000)?
         .build();
     let mut editor = Editor::with_config(rl_config)?;
     editor.set_helper(Some(MyHelper::new()));
+    // Bind both cases: which one a terminal reports for Ctrl+O varies.
+    for key in [KeyEvent::ctrl('o'), KeyEvent::ctrl('O')] {
+        editor.bind_sequence(key, EventHandler::Conditional(Box::new(ToggleThinking)));
+    }
 
     let history_path = config::history_path();
     if history_path.exists() {
@@ -1383,14 +1411,17 @@ pub async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
 
     let mut renderer = Renderer::new();
     renderer.pause_flag = Some(&PERMISSION_ACTIVE);
+    renderer.decision_seq = Some(&PERMISSION_SEQ);
+    renderer.tool_start_seq = Some(&TOOL_START_SEQ);
     let mut is_first = true;
 
-    let mut status_bar = StatusBar::new();
-    status_bar.setup();
-    status_bar.draw(&current_model, &config.provider, &config.persona, &config.working_dir);
+    status::setup();
+    status::set_context(&current_model, &config.provider, &config.persona, &config.working_dir);
+    status::draw();
 
     loop {
-        let input = match editor.readline("\n\x1b[36m> \x1b[0m") {
+        prompt_gap();
+        let input = match editor.readline(&prompt_line()) {
             Ok(line) => line.trim().to_string(),
             Err(ReadlineError::Eof) | Err(ReadlineError::Interrupted) => break,
             Err(_) => break,
@@ -1417,7 +1448,7 @@ pub async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                     // Restore oMLX api key from original load
                     let fresh = config::load();
                     config.api_key = fresh.api_key;
-                    status_bar.reset_tokens();
+                    status::reset_tokens();
                     rebuild_agent(&mut agent, &mut current_model, &config, &mut is_first, &mut renderer).await;
                 }
                 CommandResult::SwitchCloud(cloud_name) => {
@@ -1448,7 +1479,7 @@ pub async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                         ));
                         continue;
                     }
-                    status_bar.reset_tokens();
+                    status::reset_tokens();
                     rebuild_agent(&mut agent, &mut current_model, &config, &mut is_first, &mut renderer).await;
                 }
                 CommandResult::SwitchTier(tier) => {
@@ -1456,13 +1487,15 @@ pub async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                     rebuild_agent(&mut agent, &mut current_model, &config, &mut is_first, &mut renderer).await;
                 }
                 CommandResult::SwitchPersona(persona) => {
-                    eprintln!("  \x1b[32mPersona → {persona}\x1b[0m");
+                    renderer.notice(&format!("persona → {persona}"));
                     config.persona = persona;
                     rebuild_agent(&mut agent, &mut current_model, &config, &mut is_first, &mut renderer).await;
                 }
+                CommandResult::Thinking(arg) => apply_thinking_command(&arg, &mut renderer),
                 CommandResult::Continue => {}
             }
-            status_bar.draw(&current_model, &config.provider, &config.persona, &config.working_dir);
+            status::set_context(&current_model, &config.provider, &config.persona, &config.working_dir);
+            status::draw();
             continue;
         }
 
@@ -1471,14 +1504,15 @@ pub async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
             Ok(_) => {
                 is_first = false;
                 let u = agent.usage();
-                status_bar.update_usage(&u, &current_model, &config.provider, &config.persona, &config.working_dir);
+                status::set_context(&current_model, &config.provider, &config.persona, &config.working_dir);
+                status::update_usage(&u);
             }
             Err(e) => renderer.error(&e.to_string()),
         }
         running.store(false, Ordering::Relaxed);
     }
 
-    status_bar.teardown();
+    status::teardown();
 
     // Save history
     if let Some(parent) = history_path.parent() {
@@ -1486,7 +1520,7 @@ pub async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
     }
     let _ = editor.save_history(&history_path);
 
-    eprintln!("\x1b[90mGoodbye.\x1b[0m");
+    eprintln!("{DIM}Goodbye.{RESET}");
     Ok(())
 }
 

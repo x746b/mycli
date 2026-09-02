@@ -10,6 +10,7 @@ api_key = "omlx-xxxxxxxxxxxxxxxxxxxx"
 # tool_tier = "auto"      # auto | simple | medium | full
 # persona = "code"        # code | redteam | blueteam | data
 # cost_limit = 0.0        # USD per session, 0 = unlimited
+# show_thinking = true    # stream model reasoning; Ctrl+O toggles at runtime
 
 # ─── MCP servers ───────────────────────────────────────────
 # Tools auto-discovered on startup (full tier only)

@@ -2,3 +2,4 @@
 Cargo.lock
 bench/results/
 /mycli
+/bin/

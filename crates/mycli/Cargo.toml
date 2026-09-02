@@ -26,6 +26,8 @@ clap = { version = "4", features = ["derive"] }
 # Terminal
 crossterm = "0.28"
 termimad = "0.30"
+unicode-width = { workspace = true }
+similar = { workspace = true }
 
 # Input
 rustyline = "15"
