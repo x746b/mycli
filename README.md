@@ -39,17 +39,15 @@ $ mycli
     gemini
     kimi
   ▸ openai
-
-...
 ```
 
 
 ```bash
 # single-shot with tiny model and simple toolset:
-mycli -t simple -m RedSage-8B          
+mycli -t simple -m RedSage-Qwen3-8B-DPO         
 
 # offensive security persona with full toolset support and bigger model
-mycli -p redteam -t full -m mlx-community_Qwen3.8-27B-mxfp8 "cybersec prompt"    
+mycli -p redteam -t full -m orcarouter_Qwen3.8-27B-Uncensored-8B "cybersec prompt"    
 ```
 
 ** ~ 5MB static binary** | **Rust** | **32 tools** | **3 tool tiers** | **6 personas** | **MCP support** | **Hot-swappable models & providers**
@@ -107,7 +105,7 @@ model = "kimi-k3"
 
 [cloud.openai]
 api_key = "sk-..."
-model = "gpt-5.4"
+model = "gpt-5.5"
 # admin_key = "sk-admin-..."      # /usage spend; needs api.usage.read scope
 # credits = 50.00                 # optional, credit balance
 # credits_since = "2026-08-01"    # optional, date that balance was true
@@ -126,14 +124,14 @@ Environment variables (`MYCLI_MODEL`, `MYCLI_API_KEY`, `MOONSHOT_API_KEY`, `DEEP
 ### oMLX backend — local LLM inference
 
 ```bash
-omlx serve --model-dir ~/AI/models --paged-ssd-cache-dir ~/.omlx/cache --port 8000
+omlx serve --model-dir ~/models --paged-ssd-cache-dir ~/.omlx/cache --port 8000
 ```
 
 ### REPL / single-shot
 
 ```bash
 mycli                                          # auto-detect local oMLX model
-mycli -m Trinity-Mini-8bit                     # specific local model
+mycli -m Qwen3.8-Flash-Next                    # specific local model
 mycli --cloud kimi                             # start with cloud Kimi
 mycli -t simple                                # minimal tools for small models
 mycli "find the error in ./test.rs and fix it" # single-shot
@@ -198,7 +196,7 @@ Designed to match tool complexity to model capability:
 
 | Tier | Tools | Best for |
 |------|-------|----------|
-| **simple** | Read, Write, Bash | 7B–8B models — minimal surface, hard to mess up |
+| **simple** | Read, Write, Bash | small models — minimal surface, hard to mess up |
 | **medium** | + Edit, Glob, Grep, WebSearch | 24B+ models — structured tools, edit tolerance helps |
 | **full** | + WebFetch, Skill, MCP tools | bigger local and cloud models — full power |
 
@@ -384,24 +382,6 @@ for the first token is prefill and everything after it is generation. Tool
 execution happens after the turn completes, so it never lands inside either
 window.
 
-The two clocks count prompt tokens differently, on purpose:
-
-- **On the provider's clock the whole prompt counts**, cache hits included. That
-  duration covers only work the server really did, so dividing by less would
-  report a rate it never claimed.
-- **On the client clock only tokens the server cannot have had ready count** —
-  it is wall-clock time for the whole request, so counting cached tokens would
-  flatter a warm cache. The provider's cached-token count is used when there is
-  one; otherwise prompt *growth* since the previous turn stands in.
-
-Client-side prefill also contains the HTTP round trip and any queueing, so it
-reads below the server's figure — slightly on a warm local server, noticeably
-on the first request after the model has been idle.
-
-A turn that emits only a tool call has no first token to divide on. It is still
-measurable when the provider reports durations, and either way it advances the
-prompt-size accounting.
-
 ### Context Window
 
 Taken from the first of these that answers:
@@ -410,12 +390,9 @@ Taken from the first of these that answers:
 2. What a local server states: oMLX reports `max_model_len` on `/v1/models`.
 3. A guess from the model name.
 
-The built-in table carries figures verified against each provider: Opus 5 and
-the Claude 4.6 generation onward 1M, GPT-5.6 1,050,000, Kimi K3 / DeepSeek V4 /
-Gemini 3.1 1,048,576, older generations lower. The guess is coarse, so set it
-for any cloud model whose id it does not recognise — an unrecognised id falls
-back to 32,768, and a 400k model treated as 32k shows a full context bar and
-compacts far too early:
+The guess is coarse — an unrecognised id falls back to 32,768, and a 400k model
+treated as 32k shows a full context bar and compacts far too early. Set it
+explicitly for any cloud model it does not recognise:
 
 ```toml
 [cloud.openai]
@@ -482,7 +459,7 @@ A model benchmark suite for comparing local LLM capabilities across personas and
 ```bash
 cd bench
 ./bench.sh                                                            # run all oMLX models (bench.toml, 12 tests)
-./bench.sh WhiteRabbit                                                # filter by model name
+./bench.sh Qwen3.8-Flash                                              # filter by model name
 BENCH_FILE=bench_v2.toml ./bench.sh                                   # enhanced suite (45 tests, all 6 personas)
 ./grade.sh                                                            # auto-grade results via DeepSeek API
 ```
