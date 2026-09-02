@@ -104,11 +104,21 @@ pub fn estimate_messages_tokens(messages: &[Message]) -> u64 {
 pub fn context_window_for_model(model: &str) -> u64 {
     let model = model.to_ascii_lowercase();
     match model.as_str() {
-        // Anthropic
+        // Anthropic. The 4.6 generation and later hold 1M; earlier ones 200k.
+        m if m.contains("fable") || m.contains("mythos") => 1_000_000,
+        m if m.contains("opus-5")
+            || m.contains("opus-4-8")
+            || m.contains("opus-4-7")
+            || m.contains("opus-4-6") =>
+        {
+            1_000_000
+        }
+        m if m.contains("sonnet-5") || m.contains("sonnet-4-6") => 1_000_000,
         m if m.contains("opus") => 200_000,
         m if m.contains("sonnet") => 200_000,
         m if m.contains("haiku") => 200_000,
         // OpenAI
+        m if m.contains("gpt-5") => 400_000,
         m if m.contains("gpt-4o") => 128_000,
         m if m.contains("gpt-4-turbo") => 128_000,
         m if m.contains("gpt-4") => 8_192,
@@ -568,7 +578,6 @@ mod tests {
 
     #[test]
     fn test_context_window_for_model() {
-        assert_eq!(context_window_for_model("claude-sonnet-4-6"), 200_000);
         assert_eq!(context_window_for_model("gpt-4o"), 128_000);
         assert_eq!(context_window_for_model("gpt-4"), 8_192);
         // Local servers name models however they like; a capitalised id used
@@ -576,6 +585,16 @@ mod tests {
         assert_eq!(context_window_for_model("Qwen3.6-35B-A3B-8bit"), 32_768);
         assert_eq!(context_window_for_model("Llama-3.3-70B"), 8_192);
         assert_eq!(context_window_for_model("GPT-4o-mini"), 128_000);
+        // The current generations hold far more than the ones before them,
+        // and the family name alone cannot tell them apart.
+        assert_eq!(context_window_for_model("claude-opus-5"), 1_000_000);
+        assert_eq!(context_window_for_model("claude-opus-4-6"), 1_000_000);
+        assert_eq!(context_window_for_model("claude-sonnet-5"), 1_000_000);
+        assert_eq!(context_window_for_model("claude-sonnet-4-6"), 1_000_000);
+        assert_eq!(context_window_for_model("claude-opus-4-5"), 200_000);
+        assert_eq!(context_window_for_model("claude-haiku-4-5"), 200_000);
+        assert_eq!(context_window_for_model("gpt-5.6-luna"), 400_000);
+        assert_eq!(context_window_for_model("gpt-5.5"), 400_000);
     }
 
     #[test]

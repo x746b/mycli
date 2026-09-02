@@ -1652,13 +1652,20 @@ pub async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
             match handle_command(cmd, args, &config, &current_model) {
                 CommandResult::Exit => break,
                 CommandResult::SwitchModel(new_model) => {
-                    // Local model switch — set oMLX provider
+                    // Local model switch — set oMLX provider.
                     config.provider = "omlx".into();
                     config.base_url = "http://127.0.0.1:8000/v1".into();
                     config.model = new_model;
-                    // Restore oMLX api key from original load
+                    // Restore every setting a cloud profile may have
+                    // overwritten. Leaving them behind would apply the old
+                    // provider's limits to the new one — a 400k context window
+                    // claimed for a local model, silently beating the figure
+                    // its server reports.
                     let fresh = config::load();
                     config.api_key = fresh.api_key;
+                    config.context_window = fresh.context_window;
+                    config.max_tokens = fresh.max_tokens;
+                    config.max_turns = fresh.max_turns;
                     status::reset_tokens();
                     rebuild_agent(&mut agent, &mut current_model, &config, &mut is_first, &mut renderer).await;
                 }
