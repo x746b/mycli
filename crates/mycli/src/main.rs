@@ -2,6 +2,8 @@
 //! Local-first (oMLX), cloud-ready (Kimi, DeepSeek).
 
 mod config;
+mod keys;
+mod markdown;
 mod render;
 mod repl;
 mod status;

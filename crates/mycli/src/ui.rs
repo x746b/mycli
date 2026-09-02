@@ -31,18 +31,29 @@ const V: char = '│';
 /// harder to read than a fixed measure, so cap it.
 const MAX_PANEL: usize = 96;
 
-/// Usable terminal width, with a sane fallback when not a tty.
+/// Usable terminal width, with a sane fallback when the size is unknown.
+///
+/// A pty with no window size set reports 0 columns rather than failing, so an
+/// implausible answer has to fall back the same way an error does.
 pub fn term_width() -> usize {
     crossterm::terminal::size()
         .map(|(c, _)| c as usize)
+        .ok()
+        .filter(|&c| c >= 20)
         .unwrap_or(80)
-        .max(20)
 }
 
-/// Width for panels and prompt boxes: the terminal, minus a small margin,
-/// capped at [`MAX_PANEL`].
+/// Width for dialogs: the terminal, minus a small margin, capped at
+/// [`MAX_PANEL`]. A dialog is a fixed measure so a short command does not sit
+/// alone in a box stretched across an ultrawide terminal.
 pub fn panel_width() -> usize {
     term_width().saturating_sub(2).clamp(24, MAX_PANEL)
+}
+
+/// Width for flowing content — markdown, and the rules around the prompt.
+/// Uses the whole terminal, so tables and code blocks get the room they need.
+pub fn text_width() -> usize {
+    term_width().saturating_sub(1).max(20)
 }
 
 // ─── Measurement ────────────────────────────────────────────────────────────
@@ -502,7 +513,10 @@ mod demo {
     #[ignore]
     fn visual_demo() {
         // Prompt
-        println!("\n  {ACCENT}▌{RESET} {ACCENT}{BOLD}›{RESET} write an expression parser and test it");
+        let rule = "─".repeat(text_width());
+        println!("\n{DIM}{rule}{RESET}");
+        println!(" {ACCENT}{BOLD}›{RESET} write an expression parser and test it");
+        println!("{DIM}{rule}{RESET}");
 
         let mut r = Renderer::new();
         r.push_thinking("The user wants a recursive-descent parser. Grammar: expr -> term (('+'|'-') term)*, term -> factor, factor -> unary, atom -> NUMBER | '(' expr ')'. I'll write a tokenizer first, then four mutually-recursive functions, one per precedence level.\n");
@@ -537,5 +551,11 @@ mod demo {
         r.tool_end("Bash", "3 + 4 * 2        = 11.0\n(1 + 2) * -(3 + 4) = -21.0\n1 / 0 -> ValueError\nall 12 checks passed\nextra line a\nextra line b\nextra line c", false, Duration::from_millis(2330));
         r.tool_start("Read", &serde_json::json!({"file_path": "/opt/mycli/missing.rs"}));
         r.tool_end("Read", "No such file or directory (os error 2)", true, Duration::from_millis(4));
+
+        // Markdown: a table, rendered whole.
+        let md = "Result:\n\n| Step | a | b | q |\n|---|---:|---:|:-:|\n\
+                  | 1 | 1914 | 899 | 2 |\n| 2 | 899 | 116 | 7 |\n\n\
+                  So `gcd = 29`.\n";
+        print!("\n{ACCENT}●{RESET} {}", crate::markdown::render(md, text_width()));
     }
 }

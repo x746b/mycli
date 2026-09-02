@@ -149,6 +149,16 @@ impl Agent {
         self.cancel_token.cancel();
     }
 
+    /// Install a fresh cancellation token, arming the agent for another turn.
+    ///
+    /// A `CancellationToken` is one-shot: once tripped it stays tripped. A
+    /// long-lived agent whose turn was interrupted would otherwise refuse
+    /// every later turn, so a caller that supports interruption must re-arm
+    /// between turns.
+    pub fn set_cancel_token(&mut self, token: tokio_util::sync::CancellationToken) {
+        self.cancel_token = token;
+    }
+
     /// Subscribe to the broadcast channel (requires enable_broadcast on builder).
     pub fn subscribe(&self) -> Option<broadcast::Receiver<AgentEvent>> {
         self.broadcast_tx.as_ref().map(|tx| tx.subscribe())

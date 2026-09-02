@@ -3,6 +3,7 @@
 use crate::config::{self, Config};
 use chrono::Datelike;
 use crate::render::{self, Renderer};
+use crate::keys;
 use crate::status;
 use crate::ui::{self, ACCENT, BOLD, DIM, GREEN, RED, RESET, YELLOW};
 use crate::Cli;
@@ -38,6 +39,26 @@ static PERMISSION_ACTIVE: AtomicBool = AtomicBool::new(false);
 /// runner can execute passes through a policy, so this always advances; the
 /// renderer waits on it to keep the tool header below the approval dialog.
 static PERMISSION_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// The token for the turn in flight, so the SIGINT handler can trip whichever
+/// one is current. Re-armed before every turn: a `CancellationToken` is
+/// one-shot, so reusing a tripped one would make the session refuse all
+/// further work after a single interrupt.
+static TURN_CANCEL: Mutex<Option<CancellationToken>> = Mutex::new(None);
+
+/// Install a fresh cancellation token for the coming turn.
+fn arm_turn_cancel() -> CancellationToken {
+    let token = CancellationToken::new();
+    *TURN_CANCEL.lock() = Some(token.clone());
+    token
+}
+
+/// Trip the current turn's token, if a turn is running.
+fn cancel_current_turn() {
+    if let Some(token) = TURN_CANCEL.lock().as_ref() {
+        token.cancel();
+    }
+}
 
 /// Bumped by the renderer when it begins handling a `ToolStart`, after every
 /// earlier event has been written. The interactive policy waits for it before
@@ -159,6 +180,9 @@ fn permission_prompt(req: &PermissionRequest) -> char {
     use crossterm::event::{self, Event, KeyCode, KeyEvent};
     use crossterm::{cursor, execute, terminal};
 
+    // Take the keyboard from the key watcher for the duration of the dialog.
+    keys::park();
+
     let options: &[(char, &str)] = &[
         ('y', "Yes"),
         ('s', "Yes, don't ask again"),
@@ -174,7 +198,8 @@ fn permission_prompt(req: &PermissionRequest) -> char {
 
     let mut stderr = io::stderr();
 
-    if terminal::enable_raw_mode().is_err() {
+    if !keys::stdin_is_tty() {
+        keys::unpark();
         eprint!("  [Y]es [N]o [S]ession-allow: ");
         let _ = io::stderr().flush();
         let mut input = String::new();
@@ -182,6 +207,7 @@ fn permission_prompt(req: &PermissionRequest) -> char {
         eprintln!();
         return input.trim().chars().next().unwrap_or('n');
     }
+    keys::enter();
 
     draw_permission_options(&mut stderr, options, sel);
 
@@ -208,7 +234,8 @@ fn permission_prompt(req: &PermissionRequest) -> char {
         }
     };
 
-    let _ = terminal::disable_raw_mode();
+    keys::exit();
+    keys::unpark();
 
     // Replace the options line with the outcome
     let _ = execute!(stderr, cursor::MoveUp(1), terminal::Clear(terminal::ClearType::CurrentLine));
@@ -326,21 +353,29 @@ impl ConditionalEventHandler for ToggleThinking {
 
 // ─── Prompt ─────────────────────────────────────────────────────────────────
 
-/// Blank line before the prompt, separating one turn from the next.
-fn prompt_gap() {
-    print!("\n");
+/// Rule drawn above and below the input.
+///
+/// Full-width rules rather than a box: rustyline owns the redraw of the input
+/// line and clears to end-of-line on every keystroke, so a box's right edge
+/// cannot survive typing, and its left edge cannot be repeated on the rows a
+/// wrapped or pasted input spills onto. Rules frame the input just as well and
+/// stay correct in both cases.
+fn prompt_rule() {
+    print!("{DIM}{}{RESET}\n", "─".repeat(ui::text_width()));
     let _ = io::stdout().flush();
 }
 
-/// The input prompt: an accent gutter bar and a chevron.
-///
-/// Deliberately borderless. rustyline owns the redraw of the input line and
-/// clears to end-of-line on every keystroke, so a box's right edge cannot
-/// survive typing, and its left edge cannot be repeated on the rows a wrapped
-/// or pasted input spills onto. A gutter that only ever occupies the first
-/// column stays correct in every one of those cases.
+fn prompt_open() {
+    print!("\n");
+    prompt_rule();
+}
+
+fn prompt_close() {
+    prompt_rule();
+}
+
 fn prompt_line() -> String {
-    format!("  {ACCENT}▌{RESET} {ACCENT}{BOLD}›{RESET} ")
+    format!(" {ACCENT}{BOLD}›{RESET} ")
 }
 
 // ─── Build agent ────────────────────────────────────────────────────────────
@@ -844,13 +879,14 @@ async fn run_prompt(
     agent: &Agent,
     prompt: &str,
     renderer: &mut Renderer,
-    is_first: bool,
+    _is_first: bool,
+    cancel: &CancellationToken,
 ) -> anyhow::Result<()> {
-    let mut stream = if is_first {
-        agent.run_stream(prompt)
-    } else {
-        agent.run_stream(prompt)
-    };
+    // Watch the keyboard for the duration of the turn so Esc can cancel it.
+    // Dropped on every exit path, restoring the terminal.
+    let _keys = keys::KeyWatcher::start(cancel.clone());
+
+    let mut stream = agent.run_stream(prompt);
 
     while let Some(event) = stream.next().await {
         match event {
@@ -865,7 +901,13 @@ async fn run_prompt(
                 ..
             } => renderer.tool_end(&name, &result, is_error, duration),
             AgentEvent::Error(msg) => {
-                renderer.error(&msg);
+                // An interrupted turn surfaces as an error from the runner;
+                // the user already saw the interrupt notice, so don't shout.
+                if msg == "Cancelled" {
+                    renderer.flush();
+                } else {
+                    renderer.error(&msg);
+                }
                 break;
             }
             AgentEvent::Complete(_) => {
@@ -1350,7 +1392,6 @@ pub async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
 
     // Signal handling
     {
-        let ct = cancel_token.clone();
         let r = running.clone();
         let last_ctrlc: Arc<Mutex<Option<std::time::Instant>>> = Arc::new(Mutex::new(None));
         let lc = last_ctrlc.clone();
@@ -1365,7 +1406,10 @@ pub async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
             }
             *last = Some(now);
             if r.load(Ordering::Relaxed) {
-                ct.cancel();
+                // The turn's own token, not the one the agent was built with:
+                // that one is replaced before every turn, so cancelling it
+                // would stop nothing.
+                cancel_current_turn();
                 eprintln!("\n  Cancelling... (Ctrl+C again to force exit)");
             } else {
                 eprintln!("\nGoodbye.");
@@ -1387,7 +1431,9 @@ pub async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
         renderer.decision_seq = Some(&PERMISSION_SEQ);
         renderer.tool_start_seq = Some(&TOOL_START_SEQ);
         running.store(true, Ordering::Relaxed);
-        let result = run_prompt(&agent, prompt, &mut renderer, true).await;
+        let turn_cancel = arm_turn_cancel();
+        agent.set_cancel_token(turn_cancel.clone());
+        let result = run_prompt(&agent, prompt, &mut renderer, true, &turn_cancel).await;
         running.store(false, Ordering::Relaxed);
         return result;
     }
@@ -1420,8 +1466,17 @@ pub async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
     status::draw();
 
     loop {
-        prompt_gap();
-        let input = match editor.readline(&prompt_line()) {
+        prompt_open();
+        // Anything typed while the model was working was consumed by the key
+        // watcher; put it back so type-ahead survives.
+        let pending = keys::take_typeahead();
+        let read = if pending.is_empty() {
+            editor.readline(&prompt_line())
+        } else {
+            editor.readline_with_initial(&prompt_line(), (&pending, ""))
+        };
+        prompt_close();
+        let input = match read {
             Ok(line) => line.trim().to_string(),
             Err(ReadlineError::Eof) | Err(ReadlineError::Interrupted) => break,
             Err(_) => break,
@@ -1499,8 +1554,10 @@ pub async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
             continue;
         }
 
+        let turn_cancel = arm_turn_cancel();
+        agent.set_cancel_token(turn_cancel.clone());
         running.store(true, Ordering::Relaxed);
-        match run_prompt(&agent, &input, &mut renderer, is_first).await {
+        match run_prompt(&agent, &input, &mut renderer, is_first, &turn_cancel).await {
             Ok(_) => {
                 is_first = false;
                 let u = agent.usage();

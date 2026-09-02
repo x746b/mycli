@@ -180,7 +180,8 @@ mycli --cloud deepseek -y "refactor main.rs"   # auto-approve tools
 
 | Key | Action |
 |-----|--------|
-| `Ctrl+O` | Toggle reasoning display |
+| `Esc` | Interrupt the running turn, at any point during generation |
+| `Ctrl+O` | Toggle reasoning display (works at the prompt *and* mid-turn) |
 | `Ctrl+C` | Interrupt the current turn (twice in quick succession to force exit) |
 | `Ctrl+D` | Exit |
 | `Tab` | Complete slash commands |
@@ -235,11 +236,20 @@ Models that emit reasoning (Kimi, DeepSeek, and local models that return
   │ precedence level, so `*` binds before `+`.
 ```
 
-Press **Ctrl+O** at the prompt to collapse it to a single live counter
-(`✻ Thinking… 412 chars · ctrl+o to show`) and again to bring it back. The
-setting applies from the next turn on; `/thinking last` reprints a block that
+Press **Ctrl+O** to collapse it to a single live counter
+(`✻ Thinking… 412 chars · ctrl+o to show`) and again to bring it back — at the
+prompt or while the model is working. `/thinking last` reprints a block that
 already streamed collapsed. Start hidden with `--no-thinking`, or set
 `show_thinking = false` in the config.
+
+### Interrupting
+
+**Esc** cancels the turn in flight — mid-generation, not just between steps —
+and the session carries on with its history intact. Ctrl+C does the same, and
+twice in quick succession force-exits.
+
+Keys pressed while the model is working are not lost: anything typed during a
+turn is replayed into the next prompt, so typing ahead still works.
 
 ### Tool Calls
 
@@ -274,16 +284,41 @@ for Write — so a call can be judged without guessing at it:
 The dialog border is colour-coded by risk: cyan for read-only, yellow for
 writes and command execution, red for destructive operations.
 
+### Markdown Output
+
+Assistant text is rendered as markdown, and tables are drawn directly rather
+than by termimad — which frames a table only when the source is written its own
+way, and never insets cells:
+
+```
+╭──────┬──────┬─────┬───╮
+│ Step │    a │   b │ q │
+├──────┼──────┼─────┼───┤
+│ 1    │ 1914 │ 899 │ 2 │
+│ 2    │  899 │ 116 │ 7 │
+╰──────┴──────┴─────┴───╯
+```
+
+Column alignment (`:---`, `---:`, `:---:`) is honoured, cells carry inline
+markdown, and a table too wide for the terminal shrinks its widest column
+rather than wrapping.
+
+Text streams as it arrives, but a construct whose layout depends on lines that
+have not arrived yet — a table, a fenced code block — is held until complete.
+Rendering a table row at a time is what produced unaligned columns before.
+
 ### Status Bar
 
-Persistent bottom bar showing session info at a glance:
+Two lines pinned to the bottom of the terminal, outside the scroll region:
 
 ```
- mlx-community_Qwen3.8-27B-mxfp8 · omlx · redteam · ctx 3% · in 1.0k out 46 · think:on · ~/project
+/opt/mycli (main)
+↑2.8k ↓1.1k · ctx 4.2%/128k · code · think:on          (omlx) mlx-community_Qwen3.8-27B-mxfp8
 ```
 
-- **ctx%** — context window fill based on last turn's input tokens (color-coded: green/yellow/red)
-- **in/out** — cumulative billing token totals for the session
+- **line 1** — working directory and git branch
+- **↑/↓** — cumulative input and output tokens for the session
+- **ctx** — context window fill from the last turn's input tokens (green/yellow/red)
 - **think** — whether reasoning is being displayed
 - Token counters reset on model/provider switch
 

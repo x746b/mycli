@@ -3,7 +3,8 @@
 //! Output is line-based rather than a full-screen TUI, so the transcript stays
 //! in the scrollback and can be scrolled, selected, and piped.
 
-use crate::ui::{self, ACCENT, BOLD, DIM, GREEN, ITALIC, RED, RESET};
+use crate::markdown;
+use crate::ui::{self, ACCENT, BOLD, DIM, GREEN, ITALIC, RED, RESET, YELLOW};
 use std::io::{self, Write};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
@@ -126,10 +127,17 @@ impl Renderer {
             let _ = io::stdout().flush();
         }
         self.buffer.push_str(delta);
-        // Flush on newline boundaries
-        if let Some(last_nl) = self.buffer.rfind('\n') {
-            let to_flush = self.buffer[..=last_nl].to_string();
-            self.buffer = self.buffer[last_nl + 1..].to_string();
+        // Flush only what markdown can lay out correctly without the rest —
+        // prose streams line by line, tables and code fences wait for their
+        // closing line. See `markdown::safe_prefix_len`.
+        let cut = if raw_mode() {
+            self.buffer.rfind('\n').map(|i| i + 1).unwrap_or(0)
+        } else {
+            markdown::safe_prefix_len(&self.buffer)
+        };
+        if cut > 0 {
+            let to_flush = self.buffer[..cut].to_string();
+            self.buffer.drain(..cut);
             self.print_markdown(&to_flush);
         }
     }
@@ -397,13 +405,17 @@ impl Renderer {
             let _ = io::stdout().flush();
             return;
         }
-        let mut skin = termimad::MadSkin::default();
-        skin.code_block.set_fg(termimad::crossterm::style::Color::Cyan);
-        skin.inline_code.set_fg(termimad::crossterm::style::Color::Cyan);
-        let rendered = skin.term_text(text);
-        print!("{rendered}");
+        print!("{}", markdown::render(text, ui::text_width()));
         let _ = io::stdout().flush();
     }
+}
+
+/// Told the user their Esc was seen. Printed from the key watcher thread, so
+/// it is one write and deliberately short.
+pub fn interrupt_notice() {
+    let mut err = io::stderr();
+    let _ = err.write_all(format!("\n  {YELLOW}\u{2718} interrupted{RESET}\n").as_bytes());
+    let _ = err.flush();
 }
 
 /// One-line outcome for a finished tool: what it produced and how long it took.
