@@ -3,6 +3,7 @@
 
 mod config;
 mod keys;
+mod latex;
 mod markdown;
 mod render;
 mod repl;

@@ -313,6 +313,26 @@ Text streams as it arrives, but a construct whose layout depends on lines that
 have not arrived yet — a table, a fenced code block — is held until complete.
 Rendering a table row at a time is what produced unaligned columns before.
 
+### Math
+
+Models answer maths questions in LaTeX, which a terminal cannot typeset, so it
+is converted to Unicode before rendering — `\(`, `\[`, `$$` and `$` spans
+alike:
+
+```
+\[ x = \frac{-b \pm \sqrt{b^2-4ac}}{2a} \]   →   x = (-b ± √(b²-4ac))/(2a)
+```
+
+Greek letters, relations, big operators, super- and subscripts, roots and
+fractions are mapped. An expression that cannot be mapped is left as written
+rather than mangled, and an exponent with no Unicode form keeps `^(...)`
+notation instead of losing its characters.
+
+Code is never touched — a fenced block or a backtick span may legitimately
+contain `$` or a backslash. Nor is a lone `$` in prose: `costs $5 to $10` and
+`echo $HOME` are left alone, because a `$…$` span has to look like an
+expression before it is treated as one.
+
 ### Input
 
 Both rules of the input frame are drawn before the editor starts, so the frame

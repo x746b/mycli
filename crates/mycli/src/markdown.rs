@@ -43,6 +43,10 @@ pub fn skin() -> MadSkin {
 /// comes out as bare pipes around tight columns. Everything else goes to
 /// termimad unchanged.
 pub fn render(text: &str, width: usize) -> String {
+    // Maths first: a terminal cannot typeset LaTeX, and leaving it raw buries
+    // the answer in backslashes. See `latex::render_math`.
+    let text = crate::latex::render_math(text);
+
     // Repair one-line tables before anything else looks at the text.
     let normalized: Vec<String> = text
         .split_inclusive('\n')
@@ -431,6 +435,22 @@ fn render_table(lines: &[&str], width: usize) -> String {
 
 // ─── Streaming boundaries ───────────────────────────────────────────────────
 
+/// Byte offset of a `$$` or `\[` that has no closing partner yet.
+fn open_math_block(text: &str) -> Option<usize> {
+    for (open, close) in [("$$", "$$"), (r"\[", r"\]")] {
+        let mut search = 0usize;
+        while let Some(rel) = text[search..].find(open) {
+            let start = search + rel;
+            let after = start + open.len();
+            match text[after..].find(close) {
+                Some(len) => search = after + len + close.len(),
+                None => return Some(start),
+            }
+        }
+    }
+    None
+}
+
 fn is_fence(line: &str) -> bool {
     let t = line.trim_start();
     t.starts_with("```") || t.starts_with("~~~")
@@ -467,6 +487,12 @@ pub fn safe_prefix_len(buf: &str) -> usize {
     }
     if in_fence {
         return fence_start;
+    }
+
+    // An unterminated display-math block: hold it, so the delimiters are not
+    // rendered as literal text before the closing pair arrives.
+    if let Some(start) = open_math_block(complete) {
+        return start;
     }
 
     // A table running to the end of the buffer may still be growing; hold it
@@ -642,6 +668,17 @@ mod tests {
     fn pipes_without_a_rule_are_not_a_table() {
         assert_eq!(table_run_len(&["| a | b |\n", "not a rule\n"]), None);
         assert_eq!(table_run_len(&["| a | b |\n", "|---|---|\n"]), Some(2));
+    }
+
+    /// A display block must not be flushed before its closing delimiter, or
+    /// half of it renders as literal `$$`.
+    #[test]
+    fn holds_back_an_unterminated_math_block() {
+        let s = "Result:\n\n$$\n\\frac{1}{2}\n";
+        assert_eq!(&s[..safe_prefix_len(s)], "Result:\n\n");
+
+        let closed = "Result:\n\n$$\n\\frac{1}{2}\n$$\n\n";
+        assert_eq!(safe_prefix_len(closed), closed.len());
     }
 
     #[test]
