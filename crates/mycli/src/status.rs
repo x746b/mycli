@@ -475,6 +475,7 @@ mod tests {
     /// client-side window, which also contains the round trip.
     #[test]
     fn provider_durations_beat_client_timing() {
+        let _guard = TEST_LOCK.lock();
         reset_tokens();
         let slow = Duration::from_secs(10);
         record_turn(
