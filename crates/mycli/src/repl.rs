@@ -793,12 +793,18 @@ fn build_tools(tier: &str, working_dir: &std::path::Path) -> Vec<Box<dyn cersei_
 async fn build_agent(config: &Config, cancel_token: CancellationToken) -> anyhow::Result<(Agent, String)> {
     let (provider, resolved_model) = build_provider(config)?;
 
-    // Prefer a window the server states over one guessed from the model name.
+    // Context window, best source first: what the user configured, then what
+    // the server states, then a guess from the model name inside the agent.
+    // Only local servers are asked — a cloud `/v1/models` costs a round trip
+    // and does not carry the figure anyway, which is what `context_window` in
+    // the config is for.
     let is_local = config.provider == "omlx"
         || config.base_url.contains("127.0.0.1")
         || config.base_url.contains("localhost");
     let api_key = if config.api_key.is_empty() { "mycli" } else { &config.api_key };
-    let context_window = if is_local {
+    let context_window = if config.context_window > 0 {
+        Some(config.context_window)
+    } else if is_local {
         omlx_context_window(&config.base_url, api_key, &resolved_model)
     } else {
         None
@@ -1664,6 +1670,7 @@ pub async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                         config.base_url = fresh.base_url;
                         config.api_key = fresh.api_key;
                         config.model = String::new();
+                        config.context_window = fresh.context_window;
                     } else if let Some(resolved) = config.resolve_cloud(&cloud_name) {
                         config.provider = resolved.name;
                         config.base_url = resolved.base_url;
@@ -1675,6 +1682,10 @@ pub async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                         if let Some(mt) = resolved.max_turns {
                             config.max_turns = mt;
                         }
+                        // A profile's window replaces whatever the previous
+                        // provider used; without this the old model's figure
+                        // would follow you across the switch.
+                        config.context_window = resolved.context_window.unwrap_or(0);
                     } else {
                         renderer.error(&format!(
                             "Unknown cloud '{}'. Available: {}. Add [cloud.{}] to ~/.mycli/config.toml",

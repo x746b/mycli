@@ -10,6 +10,7 @@ api_key = "omlx-xxxxxxxxxxxxxxxxxxxx"
 # tool_tier = "auto"      # auto | simple | medium | full
 # persona = "code"        # code | redteam | blueteam | data
 # cost_limit = 0.0        # USD per session, 0 = unlimited
+# context_window = 0      # tokens; 0 = ask the server, else guess from the model name
 # show_thinking = true    # stream model reasoning; Ctrl+O toggles at runtime
 
 # ─── MCP servers ───────────────────────────────────────────
@@ -36,6 +37,8 @@ api_key = "omlx-xxxxxxxxxxxxxxxxxxxx"
 [cloud.kimi]
 api_key = "sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 model = "kimi-k3"
+# context_window = 262144   # set when the model id is not in the built-in table;
+                            # NOT max_tokens, which caps a single response
 
 [cloud.kimi-think]
 api_key = "sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"

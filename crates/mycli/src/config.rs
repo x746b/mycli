@@ -55,6 +55,12 @@ pub struct CloudProfile {
     pub max_tokens: Option<u32>,
     /// Max agent turns override
     pub max_turns: Option<u32>,
+    /// Context window in tokens. Set this for a cloud model whose name the
+    /// built-in table does not recognise — without it the window is guessed
+    /// from the model id, and an unrecognised id falls back to 32,768.
+    ///
+    /// Distinct from `max_tokens`, which caps a single response.
+    pub context_window: Option<u64>,
 }
 
 // ─── MCP server entry ───────────────────────────────────────────────────────
@@ -96,6 +102,10 @@ pub struct Config {
     pub tool_tier: String,
     /// Cost limit in USD per session (0 = unlimited)
     pub cost_limit: f64,
+    /// Context window in tokens; 0 asks the provider and falls back to a
+    /// guess from the model name. A cloud profile's own setting wins over it.
+    #[serde(default)]
+    pub context_window: u64,
     /// MCP servers
     #[serde(default)]
     pub mcp: Vec<McpEntry>,
@@ -134,6 +144,7 @@ impl Default for Config {
             auto_approve: false,
             tool_tier: "auto".into(),
             cost_limit: 0.0,
+            context_window: 0,
             mcp: Vec::new(),
             cloud: HashMap::new(),
             persona: "code".into(),
@@ -235,6 +246,7 @@ impl Config {
             .and_then(|p| p.max_tokens)
             .or(preset.as_ref().map(|p| p.max_tokens));
         let max_turns = profile.and_then(|p| p.max_turns);
+        let context_window = profile.and_then(|p| p.context_window).filter(|w| *w > 0);
 
         Some(ResolvedCloud {
             name: name.to_string(),
@@ -246,6 +258,7 @@ impl Config {
             credits_since,
             max_tokens,
             max_turns,
+            context_window,
         })
     }
 
@@ -273,6 +286,7 @@ pub struct ResolvedCloud {
     pub credits_since: String,
     pub max_tokens: Option<u32>,
     pub max_turns: Option<u32>,
+    pub context_window: Option<u64>,
 }
 
 // ─── Config directories ──────────────────────────────────────────────────
@@ -401,6 +415,10 @@ pub fn apply_cli_overrides(cli: &Cli, config: &mut Config) {
             if let Some(mt) = resolved.max_turns {
                 config.max_turns = mt;
             }
+            // The profile's window, or auto-detection. The top-level setting
+            // describes the default provider, so it does not follow you onto a
+            // cloud one — put a cloud model's window in its own profile.
+            config.context_window = resolved.context_window.unwrap_or(0);
         } else {
             eprintln!(
                 "Warning: unknown cloud profile '{}'. Available: {}",
@@ -447,5 +465,43 @@ pub fn resolve_tool_tier(config: &Config) -> &str {
                 || config.base_url.contains("localhost");
             if is_local { "medium" } else { "full" }
         }
+    }
+}
+
+#[cfg(test)]
+mod context_window_tests {
+    use super::*;
+
+    fn config_with(profile: CloudProfile) -> Config {
+        let mut config = Config::default();
+        config.cloud.insert("openai".into(), profile);
+        config
+    }
+
+    #[test]
+    fn a_profile_window_is_resolved() {
+        let config = config_with(CloudProfile {
+            api_key: "k".into(),
+            model: "gpt-5.6-luna".into(),
+            context_window: Some(400_000),
+            ..Default::default()
+        });
+        let resolved = config.resolve_cloud("openai").unwrap();
+        assert_eq!(resolved.context_window, Some(400_000));
+    }
+
+    /// Zero means "work it out", not "a window of nothing" — treating it as a
+    /// real value would make every rate and warning divide by zero.
+    #[test]
+    fn zero_is_not_a_window() {
+        let config = config_with(CloudProfile {
+            api_key: "k".into(),
+            context_window: Some(0),
+            ..Default::default()
+        });
+        assert_eq!(config.resolve_cloud("openai").unwrap().context_window, None);
+
+        let config = config_with(CloudProfile { api_key: "k".into(), ..Default::default() });
+        assert_eq!(config.resolve_cloud("openai").unwrap().context_window, None);
     }
 }

@@ -363,11 +363,29 @@ Two lines pinned to the bottom of the terminal, outside the scroll region:
 
 ### Context Window
 
-The window comes from the provider when it states one — oMLX reports
-`max_model_len` on `/v1/models` — and is guessed from the model name only as a
-fallback. The guess is coarse: a 256k model named `Qwen3.6-35B-A3B-8bit` would
-otherwise fall through to a 32k default, an eight-fold under-estimate that
-shows a full context bar and compacts far too early.
+The window is taken from the first of these that answers:
+
+1. `context_window` in the config — on a cloud profile, or top-level for the
+   default provider.
+2. What a local server states: oMLX reports `max_model_len` on `/v1/models`.
+   Cloud endpoints are not asked; their `/v1/models` costs a round trip and
+   does not carry the figure.
+3. A guess from the model name.
+
+The guess is coarse, so set it for any cloud model whose id the built-in table
+does not recognise — an unrecognised id falls back to 32,768, and a 400k model
+treated as 32k shows a full context bar and compacts far too early:
+
+```toml
+[cloud.openai]
+api_key = "sk-..."
+model = "gpt-5.6-luna"
+context_window = 400000   # tokens the model can hold
+# max_tokens is a different setting: the cap on a single response
+```
+
+A profile's window applies while that profile is active; the top-level setting
+describes the default provider and does not follow you onto a cloud one.
 
 At 90% of the window the conversation is compacted: older turns are summarised
 by the model and replaced with that summary, keeping the ten most recent
@@ -452,11 +470,29 @@ Two lines pinned to the bottom of the terminal, outside the scroll region:
 
 ### Context Window
 
-The window comes from the provider when it states one — oMLX reports
-`max_model_len` on `/v1/models` — and is guessed from the model name only as a
-fallback. The guess is coarse: a 256k model named `Qwen3.6-35B-A3B-8bit` would
-otherwise fall through to a 32k default, an eight-fold under-estimate that
-shows a full context bar and compacts far too early.
+The window is taken from the first of these that answers:
+
+1. `context_window` in the config — on a cloud profile, or top-level for the
+   default provider.
+2. What a local server states: oMLX reports `max_model_len` on `/v1/models`.
+   Cloud endpoints are not asked; their `/v1/models` costs a round trip and
+   does not carry the figure.
+3. A guess from the model name.
+
+The guess is coarse, so set it for any cloud model whose id the built-in table
+does not recognise — an unrecognised id falls back to 32,768, and a 400k model
+treated as 32k shows a full context bar and compacts far too early:
+
+```toml
+[cloud.openai]
+api_key = "sk-..."
+model = "gpt-5.6-luna"
+context_window = 400000   # tokens the model can hold
+# max_tokens is a different setting: the cap on a single response
+```
+
+A profile's window applies while that profile is active; the top-level setting
+describes the default provider and does not follow you onto a cloud one.
 
 At 90% of the window the conversation is compacted: older turns are summarised
 by the model and replaced with that summary, keeping the ten most recent
