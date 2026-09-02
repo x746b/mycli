@@ -54,9 +54,17 @@ static STATE: Mutex<State> = Mutex::new(State::new());
 
 /// Reserve the footer rows by shrinking the scroll region.
 ///
+/// Two things have to be got right here.
+///
 /// The rows are made by scrolling existing content up, not by jumping the
-/// cursor to a fixed row: the cursor may already be above that row after a
-/// short banner, and moving it there would overwrite what was just printed.
+/// cursor to a fixed row: after a short banner the cursor sits well above that
+/// row, and moving it down there would strand the banner and leave a screen of
+/// blank space.
+///
+/// And DECSTBM (`ESC [ t ; b r`) homes the cursor to the top-left of the new
+/// region as a side effect. Without saving and restoring around it, everything
+/// printed afterwards — the input rule, the prompt — lands at the top of the
+/// screen, on top of the banner.
 pub fn setup() {
     let Ok((_, rows)) = crossterm::terminal::size() else {
         return;
@@ -65,10 +73,10 @@ pub fn setup() {
         return;
     }
     let out = format!(
-        "{}\x1b[1;{}r\x1b[{}A",
-        "\n".repeat(FOOTER_ROWS as usize),
-        rows - FOOTER_ROWS,
-        FOOTER_ROWS,
+        "{newlines}\x1b[s\x1b[1;{bottom}r\x1b[u\x1b[{up}A",
+        newlines = "\n".repeat(FOOTER_ROWS as usize),
+        bottom = rows - FOOTER_ROWS,
+        up = FOOTER_ROWS,
     );
     let mut err = io::stderr();
     let _ = err.write_all(out.as_bytes());
@@ -83,13 +91,15 @@ pub fn teardown() {
         return;
     }
     state.enabled = false;
-    let mut out = String::from("\x1b[r");
+    // Clear the footer, then drop the region — and restore the cursor after,
+    // because resetting the region homes it just as setting one does.
+    let mut out = String::from("\x1b[s");
     if let Ok((_, rows)) = crossterm::terminal::size() {
         for row in (rows - FOOTER_ROWS + 1)..=rows {
             out.push_str(&format!("\x1b[{row};1H\x1b[K"));
         }
-        out.push_str(&format!("\x1b[{};1H", rows - FOOTER_ROWS));
     }
+    out.push_str("\x1b[r\x1b[u");
     let mut err = io::stderr();
     let _ = err.write_all(out.as_bytes());
     let _ = err.flush();

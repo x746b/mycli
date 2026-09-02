@@ -400,7 +400,7 @@ impl Renderer {
             let _ = io::stdout().flush();
             return;
         }
-        let rendered = markdown::render(text, ui::text_width());
+        let rendered = markdown::render(text, ui::wrap_width());
         if !self.text_block_open {
             if rendered.trim().is_empty() {
                 return;

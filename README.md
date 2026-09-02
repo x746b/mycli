@@ -313,6 +313,20 @@ Text streams as it arrives, but a construct whose layout depends on lines that
 have not arrived yet — a table, a fenced code block — is held until complete.
 Rendering a table row at a time is what produced unaligned columns before.
 
+### Checking the Terminal Output
+
+A raw capture (`script`) records the byte stream, not the screen, so cursor
+motion and scroll-region bugs are invisible in it. `tools/vt.py` replays a
+capture onto a virtual screen and prints what a terminal would actually show:
+
+```bash
+printf '/exit\n' | script -qc "stty rows 30 cols 110; ./target/debug/mycli" /dev/null \
+  | python3 tools/vt.py 30 110
+```
+
+Each line is numbered, and the cursor position and scroll region are reported
+at the end.
+
 ### Status Bar
 
 Two lines pinned to the bottom of the terminal, outside the scroll region:

@@ -50,10 +50,19 @@ pub fn panel_width() -> usize {
     term_width().saturating_sub(2).clamp(24, MAX_PANEL)
 }
 
-/// Width for flowing content — markdown, and the rules around the prompt.
-/// Uses the whole terminal, so tables and code blocks get the room they need.
+/// Width for full-bleed decoration — the rules around the prompt.
 pub fn text_width() -> usize {
     term_width().saturating_sub(1).max(20)
+}
+
+/// Width for wrapped content: markdown, tables, code blocks.
+///
+/// Two columns short of the terminal on purpose. A line that ends in the very
+/// last column has already wrapped by the time its newline arrives, so the
+/// newline lands a row further down and leaves a blank line between every
+/// wrapped paragraph line.
+pub fn wrap_width() -> usize {
+    term_width().saturating_sub(2).max(20)
 }
 
 // ─── Measurement ────────────────────────────────────────────────────────────
