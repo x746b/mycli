@@ -66,6 +66,9 @@ fn symbols() -> &'static HashMap<&'static str, &'static str> {
             ("because", "∵"), ("dots", "…"), ("ldots", "…"), ("cdots", "⋯"),
             ("vdots", "⋮"), ("ddots", "⋱"), ("prime", "′"), ("degree", "°"),
             ("aleph", "ℵ"), ("hbar", "ℏ"), ("ell", "ℓ"), ("Re", "ℜ"), ("Im", "ℑ"),
+            ("square", "∎"), ("blacksquare", "∎"), ("qed", "∎"), ("mid", "|"),
+            ("langle", "⟨"), ("rangle", "⟩"), ("lfloor", "⌊"), ("rfloor", "⌋"),
+            ("lceil", "⌈"), ("rceil", "⌉"), ("binom", "C"),
         ]
         .into_iter()
         .collect()
@@ -607,9 +610,29 @@ fn looks_like_math(body: &str, open: &str) -> bool {
     if body.chars().count() <= 3 && body.chars().all(|c| c.is_alphanumeric()) {
         return true;
     }
-    let has_letter = body.chars().any(|c| c.is_ascii_alphabetic());
-    let has_operator = body.chars().any(|c| "=+-*/<>".contains(c));
-    has_letter && has_operator
+    // Prose reads as words. A run of two or more letters is a word, not a
+    // variable, and treating "costs $5 to $10" as maths would delete the
+    // dollar signs from a sentence about money — worse than leaving an
+    // interval like `$(a, b)$` unconverted, which is only cosmetic.
+    if longest_letter_run(body) >= 2 {
+        return body.chars().any(|c| "=+-*/<>".contains(c));
+    }
+    // Single letters and punctuation: `$(a, b)$`, `$x = 1$`, `$f(x)$`.
+    body.chars().any(|c| c.is_ascii_alphabetic())
+}
+
+fn longest_letter_run(s: &str) -> usize {
+    let mut best = 0;
+    let mut run = 0;
+    for c in s.chars() {
+        if c.is_ascii_alphabetic() {
+            run += 1;
+            best = best.max(run);
+        } else {
+            run = 0;
+        }
+    }
+    best
 }
 
 #[cfg(test)]
@@ -641,6 +664,15 @@ mod markdown_tests {
     fn does_not_treat_prose_dollars_as_math() {
         assert_eq!(render_math("costs $5 to $10 today"), "costs $5 to $10 today");
         assert_eq!(render_math("set $PATH and $HOME now"), "set $PATH and $HOME now");
+        assert_eq!(render_math("paid $5, or $10 total"), "paid $5, or $10 total");
+    }
+
+    /// Intervals and applications carry no operator, but they are still maths.
+    #[test]
+    fn accepts_spans_of_single_letters_and_punctuation() {
+        assert_eq!(render_math(r"on $(a, b)$ and"), "on (a, b) and");
+        assert_eq!(render_math(r"where $f(x)$ is"), "where f(x) is");
+        assert_eq!(render_math(r"for $n$ terms"), "for n terms");
     }
 
     #[test]
