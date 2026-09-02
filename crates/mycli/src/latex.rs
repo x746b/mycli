@@ -68,7 +68,7 @@ fn symbols() -> &'static HashMap<&'static str, &'static str> {
             ("aleph", "ℵ"), ("hbar", "ℏ"), ("ell", "ℓ"), ("Re", "ℜ"), ("Im", "ℑ"),
             ("square", "∎"), ("blacksquare", "∎"), ("qed", "∎"), ("mid", "|"),
             ("langle", "⟨"), ("rangle", "⟩"), ("lfloor", "⌊"), ("rfloor", "⌋"),
-            ("lceil", "⌈"), ("rceil", "⌉"), ("binom", "C"),
+            ("lceil", "⌈"), ("rceil", "⌉"), ("top", "⊤"), ("bot", "⊥"),
         ]
         .into_iter()
         .collect()
@@ -79,6 +79,7 @@ fn symbols() -> &'static HashMap<&'static str, &'static str> {
 const DROPPED: &[&str] = &[
     "left", "right", "displaystyle", "textstyle", "limits", "nolimits",
     "big", "Big", "bigg", "Bigg", "bigl", "bigr", "Bigl", "Bigr",
+    "biggl", "biggr", "Biggl", "Biggr", "middle", "phantom",
     "quad", "qquad", "," , ";", ":", "!", " ",
 ];
 
@@ -87,13 +88,21 @@ const DROPPED: &[&str] = &[
 const UNWRAPPED: &[&str] = &[
     "text", "mathrm", "mathbf", "mathit", "mathsf", "mathtt", "boxed",
     "operatorname", "textbf", "textit", "mbox",
+    // Fonts. The named entries above catch ℝ, ℕ and the rest; anything else
+    // falls back to the plain letter, which reads better than a glyph half
+    // the terminals in use would render as a box.
+    "mathbb", "mathcal", "mathfrak", "mathscr", "mathbfcal",
+    // Accents. The mark is lost, the symbol under it is not.
+    "bar", "hat", "vec", "tilde", "dot", "ddot", "check", "breve", "acute",
+    "grave", "overline", "underline", "widehat", "widetilde", "overrightarrow",
+    "underbrace", "overbrace",
 ];
 
 /// Function names LaTeX writes as commands. Only the backslash goes.
 const FUNCTIONS: &[&str] = &[
     "sin", "cos", "tan", "cot", "sec", "csc", "arcsin", "arccos", "arctan",
     "sinh", "cosh", "tanh", "log", "ln", "exp", "lim", "max", "min", "sup",
-    "inf", "det", "dim", "ker", "deg", "gcd", "lcm", "bmod", "pmod", "mod",
+    "inf", "det", "dim", "ker", "deg", "gcd", "lcm", "bmod", "mod",
 ];
 
 fn superscript(c: char) -> Option<char> {
@@ -106,6 +115,8 @@ fn superscript(c: char) -> Option<char> {
         'j' => 'ʲ', 'k' => 'ᵏ', 'l' => 'ˡ', 'm' => 'ᵐ', 'o' => 'ᵒ',
         'p' => 'ᵖ', 'r' => 'ʳ', 's' => 'ˢ', 't' => 'ᵗ', 'u' => 'ᵘ',
         'v' => 'ᵛ', 'w' => 'ʷ', 'x' => 'ˣ', 'y' => 'ʸ', 'z' => 'ᶻ',
+        // `x^\top` is transpose far more often than it is the logic symbol.
+        '⊤' | 'T' => 'ᵀ',
         _ => return None,
     })
 }
@@ -154,9 +165,30 @@ fn read_group(chars: &[char], i: usize) -> Option<(String, usize)> {
     None // unbalanced
 }
 
-/// The argument of a command: a braced group, or the single next character.
+/// The argument of a command: a braced group, a whole command, or the single
+/// next character.
+///
+/// The command case matters more than it looks: `x^\top`, `\int_0^\infty`
+/// and `\oint_\gamma` are all written without braces, and taking one
+/// character left the exponent as a lone backslash — `x^(\)top`.
 fn read_argument(chars: &[char], i: usize) -> Option<(String, usize)> {
-    read_group(chars, i).or_else(|| chars.get(i).map(|c| (c.to_string(), i + 1)))
+    // A space between a command and its argument is not part of it:
+    // `\pmod n` takes `n`, not the space.
+    let i = {
+        let mut j = i;
+        while chars.get(j) == Some(&' ') {
+            j += 1;
+        }
+        j
+    };
+    if let Some(group) = read_group(chars, i) {
+        return Some(group);
+    }
+    if chars.get(i) == Some(&'\\') {
+        let (name, after) = read_command(chars, i + 1);
+        return Some((format!("\\{name}"), after));
+    }
+    chars.get(i).map(|c| (c.to_string(), i + 1))
 }
 
 /// Map every character through `f`, or give up and return `None`.
@@ -167,6 +199,10 @@ fn map_script(text: &str, f: fn(char) -> Option<char>) -> Option<String> {
 /// Wrap in parentheses when the expression would otherwise re-associate —
 /// `\frac{a+b}{c}` must not become `a+b/c`.
 fn parenthesize(s: &str) -> String {
+    // One character cannot re-associate, whatever it is: `x^∞`, not `x^(∞)`.
+    if s.chars().count() <= 1 {
+        return s.to_string();
+    }
     let atomic = s.chars().all(|c| c.is_alphanumeric() || c == '.' || c == 'π');
     if atomic || already_wrapped(s) {
         s.to_string()
@@ -320,18 +356,48 @@ fn apply_command(chars: &[char], name: &str, after: usize, out: &mut String) -> 
         }
     }
 
-    if UNWRAPPED.contains(&name) {
+    // Escaped punctuation stands for itself: `\{`, `\%`, `\$`.
+    if matches!(name, "{" | "}" | "$" | "%" | "&" | "#" | "_") {
+        out.push_str(name);
+        return after;
+    }
+
+    if name == "pmod" {
         if let Some((arg, next)) = read_argument(chars, after) {
-            out.push_str(&convert(&arg));
+            out.push_str(&format!("(mod {})", convert(&arg)));
             return next;
         }
     }
 
-    // `\mathbb{R}` and friends are looked up whole.
+    if name == "binom" || name == "dbinom" || name == "tbinom" {
+        if let Some((n, i1)) = read_argument(chars, after) {
+            if let Some((k, i2)) = read_argument(chars, i1) {
+                out.push_str(&format!("C({}, {})", convert(&n), convert(&k)));
+                return i2;
+            }
+        }
+    }
+
+    // `\xrightarrow{d}` — the arrow is the meaning, the label decoration.
+    if name.starts_with("xrightarrow") || name.starts_with("xleftarrow") {
+        let next = read_argument(chars, after).map(|(_, n)| n).unwrap_or(after);
+        out.push_str(if name.starts_with("xr") { "→" } else { "←" });
+        return next;
+    }
+
+    // `\mathbb{R}` and friends are looked up whole, before the font commands
+    // below strip their braces.
     if let Some((arg, next)) = read_group(chars, after) {
         let combined = format!("{name}{{{arg}}}");
         if let Some(sym) = symbols().get(combined.as_str()) {
             out.push_str(sym);
+            return next;
+        }
+    }
+
+    if UNWRAPPED.contains(&name) {
+        if let Some((arg, next)) = read_argument(chars, after) {
+            out.push_str(&convert(&arg));
             return next;
         }
     }
@@ -390,12 +456,40 @@ mod tests {
     #[test]
     fn drops_typesetting_and_keeps_content() {
         assert_eq!(convert(r"\left( x \right)"), "( x )");
+        assert_eq!(convert(r"\biggl(\sum a_i\biggr)^2"), "(∑ aᵢ)²");
         assert_eq!(convert(r"\boxed{x = 8}"), "x = 8");
         assert_eq!(convert(r"\text{if } x > 0"), "if x > 0");
         assert_eq!(convert(r"\int_0^1 x\,dx"), "∫₀¹ x dx");
     }
 
     /// An exponent with no Unicode form must stay legible, not disappear.
+    /// A command is one argument. Without this, `x^\top` took a lone
+    /// backslash as the exponent and rendered as `x^(\)top`.
+    #[test]
+    fn a_command_is_a_single_argument() {
+        assert_eq!(convert(r"x^\top A x"), "xᵀ A x");
+        assert_eq!(convert(r"\int_0^\infty f"), "∫₀^∞ f");
+        assert_eq!(convert(r"\oint_\gamma g"), "∮_γ g");
+    }
+
+    #[test]
+    fn unwraps_fonts_and_accents_it_cannot_draw() {
+        assert_eq!(convert(r"\mathbb{E}[X]"), "E[X]");
+        assert_eq!(convert(r"\mathcal{N}(\mu,\sigma^2)"), "N(μ,σ²)");
+        // The named ones keep their glyph.
+        assert_eq!(convert(r"\mathbb{R}"), "ℝ");
+        assert_eq!(convert(r"\bar{X}_n"), "Xₙ");
+        assert_eq!(convert(r"\overline{AB}"), "AB");
+    }
+
+    #[test]
+    fn handles_escapes_and_modular_notation() {
+        assert_eq!(convert(r"\{x \mid x \in A\}"), "{x | x ∈ A}");
+        // The space before the argument is separation, not the argument.
+        assert_eq!(convert(r"c \equiv m^e \pmod n"), "c ≡ mᵉ (mod n)");
+        assert_eq!(convert(r"\binom{n}{k}"), "C(n, k)");
+    }
+
     /// An exponent every character of which has a Unicode form is raised
     /// whole, sign and all.
     #[test]
@@ -682,4 +776,5 @@ mod markdown_tests {
         assert!(!got.contains('$'), "{got:?}");
     }
 }
+
 
