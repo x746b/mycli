@@ -395,6 +395,16 @@ fn prompt_line() -> String {
 
 // ─── Build agent ────────────────────────────────────────────────────────────
 
+/// Is this session pointed at a local server?
+///
+/// Local servers carry extensions a cloud endpoint does not — model metadata
+/// on `/v1/models`, a web search endpoint — so several decisions turn on it.
+fn is_local_provider(config: &Config) -> bool {
+    config.provider == "omlx"
+        || config.base_url.contains("127.0.0.1")
+        || config.base_url.contains("localhost")
+}
+
 fn build_provider(config: &Config) -> anyhow::Result<(OpenAi, String)> {
     let api_key = if config.api_key.is_empty() {
         "mycli".to_string()
@@ -402,9 +412,7 @@ fn build_provider(config: &Config) -> anyhow::Result<(OpenAi, String)> {
         config.api_key.clone()
     };
 
-    let is_local = config.provider == "omlx"
-        || config.base_url.contains("127.0.0.1")
-        || config.base_url.contains("localhost");
+    let is_local = is_local_provider(config);
 
     let model = if config.model.is_empty() {
         if is_local {
@@ -655,6 +663,7 @@ fn persona_prompt(name: &str) -> &'static str {
 }
 
 fn build_system_prompt(config: &Config) -> String {
+    let has_search = is_local_provider(config) && config::resolve_tool_tier(config) != "simple";
     let memory_manager = MemoryManager::new(&config.working_dir);
     let memory_content = memory_manager.build_context();
     let tier = config::resolve_tool_tier(config);
@@ -717,6 +726,12 @@ fn build_system_prompt(config: &Config) -> String {
                  - Be concise and direct.\n",
             );
         }
+    }
+
+    if has_search {
+        prompt.push_str(
+            " - WebSearch: search the web for current information (returns titles, URLs, snippets)\n",
+        );
     }
 
     prompt.push_str(&format!(
@@ -798,9 +813,7 @@ async fn build_agent(config: &Config, cancel_token: CancellationToken) -> anyhow
     // Only local servers are asked — a cloud `/v1/models` costs a round trip
     // and does not carry the figure anyway, which is what `context_window` in
     // the config is for.
-    let is_local = config.provider == "omlx"
-        || config.base_url.contains("127.0.0.1")
-        || config.base_url.contains("localhost");
+    let is_local = is_local_provider(config);
     let api_key = if config.api_key.is_empty() { "mycli" } else { &config.api_key };
     let context_window = if config.context_window > 0 {
         Some(config.context_window)
@@ -866,6 +879,16 @@ async fn build_agent(config: &Config, cancel_token: CancellationToken) -> anyhow
                 set_mcp_report(vec![("all servers".into(), Err(e.to_string()))]);
             }
         }
+    }
+
+    // Search comes from the server's own endpoint, so it is only available on
+    // a local one — and it is offered below the full tier, since the small
+    // local models are exactly the ones that cannot answer from memory.
+    if is_local && tier != "simple" {
+        tools.push(Box::new(crate::web_search::OmlxWebSearch::new(
+            &config.base_url,
+            api_key,
+        )));
     }
 
     let tool_names: Vec<&str> = tools.iter().map(|t| t.name()).collect();

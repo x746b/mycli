@@ -9,6 +9,7 @@ mod render;
 mod repl;
 mod status;
 mod ui;
+mod web_search;
 
 use clap::Parser;
 

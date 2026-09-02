@@ -381,6 +381,19 @@ Two lines pinned to the bottom of the terminal, outside the scroll region:
 - **think** — whether reasoning is being displayed
 - Token counters reset on model/provider switch
 
+### Web Search
+
+Against a local oMLX server, `WebSearch` calls its `POST /v1/web/search`
+endpoint, which uses whichever provider is set in the server's settings — DDGS,
+DuckDuckGo, Brave, or SearXNG — with the result count and snippet-vs-full-page
+choice configured there too.
+
+Going through the server means one place to configure search and one place a
+key lives, and it needs no key at all on DDGS. It is registered on the `medium`
+and `full` tiers, since the small local models are the ones least able to
+answer from memory. A cloud provider has no such endpoint, so the tool is not
+offered there.
+
 ### Context Window
 
 The window is taken from the first of these that answers:
@@ -490,6 +503,19 @@ Two lines pinned to the bottom of the terminal, outside the scroll region:
 - **think** — whether reasoning is being displayed
 - Token counters reset on model/provider switch
 
+### Web Search
+
+Against a local oMLX server, `WebSearch` calls its `POST /v1/web/search`
+endpoint, which uses whichever provider is set in the server's settings — DDGS,
+DuckDuckGo, Brave, or SearXNG — with the result count and snippet-vs-full-page
+choice configured there too.
+
+Going through the server means one place to configure search and one place a
+key lives, and it needs no key at all on DDGS. It is registered on the `medium`
+and `full` tiers, since the small local models are the ones least able to
+answer from memory. A cloud provider has no such endpoint, so the tool is not
+offered there.
+
 ### Context Window
 
 The window is taken from the first of these that answers:
@@ -567,7 +593,8 @@ it still advances the prompt-size accounting.
 ### Tool Capabilities
 - **Filesystem:** Read, Write, Edit (with fuzzy matching + line-range mode), Glob, Grep
 - **Shell:** Bash execution with permission control
-- **Web:** WebFetch for reading URLs/documentation
+- **Web:** WebSearch through the local server's own search endpoint, and
+  WebFetch for reading URLs/documentation
 - **Skills:** Bundled prompt templates (commit, review, debug, simplify, etc.)
 - **MCP:** Connect to any MCP server — tools auto-discovered and injected.
   Servers start on the `full` tool tier only; `/mcp` reports each one by name
