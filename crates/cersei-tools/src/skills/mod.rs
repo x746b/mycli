@@ -124,8 +124,10 @@ pub fn extract_description(content: &str) -> String {
         }
         // Strip heading markers
         let trimmed = trimmed.trim_start_matches('#').trim();
-        let desc = if trimmed.len() > 80 {
-            format!("{}...", &trimmed[..77])
+        // By characters: a byte-indexed cut panics on any description whose
+        // 77th byte falls inside a multi-byte character.
+        let desc = if trimmed.chars().count() > 80 {
+            format!("{}...", trimmed.chars().take(77).collect::<String>())
         } else {
             trimmed.to_string()
         };

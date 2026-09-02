@@ -56,8 +56,30 @@ struct SearchResult {
     snippet: String,
 }
 
-/// Search snippets arrive HTML-escaped, which reads badly in a prompt and
-/// wastes tokens on entities the model has to decode itself.
+/// Search snippets arrive as HTML: Brave marks matched terms with `<strong>`,
+/// and everything is entity-escaped. Both read badly in a prompt and spend
+/// tokens the model has to decode itself.
+fn clean(text: &str) -> String {
+    unescape(&strip_tags(text))
+}
+
+/// Drop HTML tags. Entities are left alone — they are unescaped afterwards, so
+/// an escaped `&lt;b&gt;` survives as text rather than being stripped as
+/// markup.
+fn strip_tags(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut depth = 0usize;
+    for c in text.chars() {
+        match c {
+            '<' => depth += 1,
+            '>' => depth = depth.saturating_sub(1),
+            _ if depth == 0 => out.push(c),
+            _ => {}
+        }
+    }
+    out
+}
+
 fn unescape(text: &str) -> String {
     text.replace("&quot;", "\"")
         .replace("&#39;", "'")
@@ -79,8 +101,8 @@ fn format_results(response: &SearchResponse) -> String {
     }
     let mut out = format!("{} results via {}:\n", response.results.len(), response.provider);
     for (i, r) in response.results.iter().enumerate() {
-        out.push_str(&format!("\n{}. {}\n   {}\n", i + 1, unescape(&r.title), r.url));
-        let snippet = unescape(&r.snippet);
+        out.push_str(&format!("\n{}. {}\n   {}\n", i + 1, clean(&r.title), r.url));
+        let snippet = clean(&r.snippet);
         if !snippet.trim().is_empty() {
             out.push_str(&format!("   {}\n", snippet.trim()));
         }
@@ -184,6 +206,14 @@ mod tests {
         assert!(out.contains("1 results via brave"), "{out}");
         assert!(out.contains("Qwen3 report"), "{out}");
         assert!(out.contains("https://example.com/a"), "{out}");
+    }
+
+    /// Brave wraps matched terms in `<strong>`.
+    #[test]
+    fn strips_markup_from_snippets() {
+        assert_eq!(clean("Red team <strong>LLM systems</strong> now"), "Red team LLM systems now");
+        // An escaped tag is content, and survives.
+        assert_eq!(clean("use &lt;strong&gt; here"), "use <strong> here");
     }
 
     /// Snippets arrive HTML-escaped from the search provider.

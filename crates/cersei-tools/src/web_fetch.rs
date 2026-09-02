@@ -77,14 +77,15 @@ impl Tool for WebFetchTool {
             body
         };
 
-        // Truncate if needed
-        let text = if text.len() > max_chars {
-            format!(
-                "{}\n\n[Truncated: {} chars total, showing first {}]",
-                &text[..max_chars],
-                text.len(),
-                max_chars
-            )
+        // Truncate if needed.
+        //
+        // By characters, not bytes: `&text[..max_chars]` panics whenever the
+        // cut lands inside a multi-byte character, and html2text emits box
+        // drawing for tables and rules, so any page with one crashed the tool.
+        let total_chars = text.chars().count();
+        let text = if total_chars > max_chars {
+            let kept: String = text.chars().take(max_chars).collect();
+            format!("{kept}\n\n[Truncated: {total_chars} chars total, showing first {max_chars}]")
         } else {
             text
         };
@@ -104,5 +105,18 @@ mod tests {
         assert!(schema["properties"]["url"].is_object());
         assert_eq!(tool.permission_level(), PermissionLevel::ReadOnly);
         assert_eq!(tool.category(), ToolCategory::Web);
+    }
+}
+
+#[cfg(test)]
+mod truncation_tests {
+    /// The crash this guards against: html2text renders tables and rules with
+    /// box-drawing characters, so a byte-indexed cut lands inside one.
+    #[test]
+    fn truncates_on_character_boundaries() {
+        let text = "─".repeat(100); // three bytes each
+        let kept: String = text.chars().take(50).collect();
+        assert_eq!(kept.chars().count(), 50);
+        assert_eq!(kept, "─".repeat(50));
     }
 }
