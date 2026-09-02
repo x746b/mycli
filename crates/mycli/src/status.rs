@@ -53,17 +53,27 @@ impl State {
 static STATE: Mutex<State> = Mutex::new(State::new());
 
 /// Reserve the footer rows by shrinking the scroll region.
+///
+/// The rows are made by scrolling existing content up, not by jumping the
+/// cursor to a fixed row: the cursor may already be above that row after a
+/// short banner, and moving it there would overwrite what was just printed.
 pub fn setup() {
-    if let Ok((_, rows)) = crossterm::terminal::size() {
-        if rows < FOOTER_ROWS + 2 {
-            return;
-        }
-        let mut err = io::stderr();
-        let _ = write!(err, "\x1b[1;{}r", rows - FOOTER_ROWS);
-        let _ = write!(err, "\x1b[{};1H", rows - FOOTER_ROWS);
-        let _ = err.flush();
-        STATE.lock().enabled = true;
+    let Ok((_, rows)) = crossterm::terminal::size() else {
+        return;
+    };
+    if rows < FOOTER_ROWS + 2 {
+        return;
     }
+    let out = format!(
+        "{}\x1b[1;{}r\x1b[{}A",
+        "\n".repeat(FOOTER_ROWS as usize),
+        rows - FOOTER_ROWS,
+        FOOTER_ROWS,
+    );
+    let mut err = io::stderr();
+    let _ = err.write_all(out.as_bytes());
+    let _ = err.flush();
+    STATE.lock().enabled = true;
 }
 
 /// Restore the full-screen scroll region and clear the footer.
@@ -73,14 +83,15 @@ pub fn teardown() {
         return;
     }
     state.enabled = false;
-    let mut err = io::stderr();
-    let _ = write!(err, "\x1b[r");
+    let mut out = String::from("\x1b[r");
     if let Ok((_, rows)) = crossterm::terminal::size() {
         for row in (rows - FOOTER_ROWS + 1)..=rows {
-            let _ = write!(err, "\x1b[{row};1H\x1b[K");
+            out.push_str(&format!("\x1b[{row};1H\x1b[K"));
         }
-        let _ = write!(err, "\x1b[{};1H", rows - FOOTER_ROWS);
+        out.push_str(&format!("\x1b[{};1H", rows - FOOTER_ROWS));
     }
+    let mut err = io::stderr();
+    let _ = err.write_all(out.as_bytes());
     let _ = err.flush();
 }
 
@@ -198,14 +209,17 @@ pub fn draw() {
         ui::truncate(&left, cols)
     };
 
-    let mut err = io::stderr();
-    let _ = write!(
-        err,
+    // One write. `write!` emits a syscall per format fragment, so a footer
+    // built piecewise can be cut in half by the agent thread's output and land
+    // in the middle of a panel.
+    let out = format!(
         "\x1b[s\x1b[{};1H\x1b[K{DIM}{}{RESET}\x1b[{};1H\x1b[K{DIM}{}{RESET}\x1b[u",
         rows - 1,
         ui::truncate(&location, cols),
         rows,
         stats,
     );
+    let mut err = io::stderr();
+    let _ = err.write_all(out.as_bytes());
     let _ = err.flush();
 }

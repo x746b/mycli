@@ -299,9 +299,15 @@ way, and never insets cells:
 ╰──────┴──────┴─────┴───╯
 ```
 
-Column alignment (`:---`, `---:`, `:---:`) is honoured, cells carry inline
-markdown, and a table too wide for the terminal shrinks its widest column
-rather than wrapping.
+Column alignment (`:---`, `---:`, `:---:`) is honoured and cells carry inline
+markdown. A table too wide for the terminal shrinks every column proportionally
+toward its longest word and wraps cells onto extra lines, rather than
+truncating the column that usually carries the explanation.
+
+Small models often emit a whole table on one line, sometimes with the
+surrounding prose run into it (`...definition.| n | prime ||---|---|| 1 | No |In
+short...`). That is detected and split back into rows; left alone it renders as
+one column per cell.
 
 Text streams as it arrives, but a construct whose layout depends on lines that
 have not arrived yet — a table, a fenced code block — is held until complete.

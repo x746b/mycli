@@ -419,8 +419,25 @@ fn build_provider(config: &Config) -> anyhow::Result<(OpenAi, String)> {
     Ok((provider, model))
 }
 
+/// Run a blocking HTTP call off the async runtime.
+///
+/// `reqwest::blocking` builds a tokio runtime of its own and panics when that
+/// runtime is dropped inside an asynchronous context — which is exactly where
+/// slash commands run, so `/model` and `/usage` aborted the process. A scoped
+/// thread gives it a plain thread to live and die on, and borrows still work.
+fn off_runtime<T: Send>(f: impl FnOnce() -> T + Send) -> T {
+    std::thread::scope(|scope| match scope.spawn(f).join() {
+        Ok(value) => value,
+        Err(panic) => std::panic::resume_unwind(panic),
+    })
+}
+
 /// Query oMLX /v1/models and return all available model IDs.
 fn list_omlx_models(base_url: &str, api_key: &str) -> Vec<String> {
+    off_runtime(|| list_omlx_models_blocking(base_url, api_key))
+}
+
+fn list_omlx_models_blocking(base_url: &str, api_key: &str) -> Vec<String> {
     let url = format!("{}/models", base_url);
     let client = reqwest::blocking::Client::new();
     let resp = match client
@@ -464,9 +481,10 @@ fn interactive_picker(models: &[String], current: &str, title: &str) -> Option<S
     let count = models.len();
     let total_lines = count + 1; // header + model rows
 
-    if terminal::enable_raw_mode().is_err() {
+    if !keys::stdin_is_tty() {
         return None;
     }
+    keys::enter();
 
     let mut stderr = io::stderr();
 
@@ -493,7 +511,7 @@ fn interactive_picker(models: &[String], current: &str, title: &str) -> Option<S
         }
     };
 
-    let _ = terminal::disable_raw_mode();
+    keys::exit();
 
     // Clean up: move up and erase the picker
     for _ in 0..total_lines {
@@ -1051,6 +1069,10 @@ fn parse_since(s: &str) -> Option<i64> {
 }
 
 fn show_cloud_balances(config: &Config) {
+    off_runtime(|| show_cloud_balances_blocking(config))
+}
+
+fn show_cloud_balances_blocking(config: &Config) {
     let client = reqwest::blocking::Client::new();
     let clouds = config.available_clouds();
     let mut found_any = false;

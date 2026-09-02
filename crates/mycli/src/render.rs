@@ -114,17 +114,12 @@ impl Renderer {
         if self.in_thinking {
             self.end_thinking();
         }
-        if !self.text_block_open && !raw_mode() {
-            // Models routinely emit a couple of bare newlines before their
-            // first real token; rendering those as markdown leaves the
-            // transcript full of stray blank lines. Swallow leading whitespace
-            // and open the block on the first line with content.
-            if delta.trim().is_empty() {
-                return;
-            }
-            self.text_block_open = true;
-            let _ = write!(io::stdout(), "\n{ACCENT}●{RESET} ");
-            let _ = io::stdout().flush();
+        // Models routinely emit a couple of bare newlines before their first
+        // real token; rendering those as markdown leaves the transcript full
+        // of stray blank lines. Swallow leading whitespace; the marker is
+        // written by `print_markdown`, which can see what it precedes.
+        if !self.text_block_open && !raw_mode() && delta.trim().is_empty() {
+            return;
         }
         self.buffer.push_str(delta);
         // Flush only what markdown can lay out correctly without the rest —
@@ -395,7 +390,7 @@ impl Renderer {
         let _ = io::stdout().flush();
     }
 
-    fn print_markdown(&self, text: &str) {
+    fn print_markdown(&mut self, text: &str) {
         // Raw mode emits the model's bytes verbatim. termimad rewrites markdown
         // for display, which mangles technical output: `*` is consumed as
         // emphasis (so `{{7*7}}` prints as `{{77}}`) and tables become box
@@ -405,7 +400,21 @@ impl Renderer {
             let _ = io::stdout().flush();
             return;
         }
-        print!("{}", markdown::render(text, ui::text_width()));
+        let rendered = markdown::render(text, ui::text_width());
+        if !self.text_block_open {
+            if rendered.trim().is_empty() {
+                return;
+            }
+            self.text_block_open = true;
+            // A block element — a table, a code fence — starts with its own
+            // frame, so the marker goes on the line above rather than butting
+            // up against the border.
+            let starts_block = ui::strip_ansi(&rendered)
+                .trim_start()
+                .starts_with(|c| "╭┌├└╰│─".contains(c));
+            print!("\n{ACCENT}●{RESET}{}", if starts_block { "\n" } else { " " });
+        }
+        print!("{rendered}");
         let _ = io::stdout().flush();
     }
 }
