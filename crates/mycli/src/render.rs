@@ -6,7 +6,7 @@
 use crate::markdown;
 use crate::ui::{self, ACCENT, BOLD, DIM, GREEN, ITALIC, RED, RESET, YELLOW};
 use std::io::{self, Write};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::time::Duration;
 
 /// Whether reasoning is streamed to the terminal. On by default; toggled with
@@ -19,6 +19,39 @@ pub fn thinking_visible() -> bool {
 
 pub fn set_thinking_visible(on: bool) {
     THINKING_VISIBLE.store(on, Ordering::Relaxed);
+}
+
+/// What the current model has actually been seen to do. `chat_template_kwargs`
+/// is accepted and silently ignored by oMLX for a template that has no thinking
+/// flag, so a successful request proves nothing — only watching whether
+/// reasoning ever arrives distinguishes a model that reasons from one that
+/// cannot. Reset on every model switch.
+static REASONING_SEEN: AtomicBool = AtomicBool::new(false);
+static TURNS_SEEN: AtomicU32 = AtomicU32::new(0);
+
+pub fn note_reasoning() {
+    REASONING_SEEN.store(true, Ordering::Relaxed);
+}
+
+pub fn note_turn() {
+    TURNS_SEEN.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn forget_model_observations() {
+    REASONING_SEEN.store(false, Ordering::Relaxed);
+    TURNS_SEEN.store(0, Ordering::Relaxed);
+}
+
+/// `Some(true)` if this model has produced reasoning, `Some(false)` if it has
+/// completed turns and never has, `None` while there is nothing to go on.
+pub fn model_reasons() -> Option<bool> {
+    if REASONING_SEEN.load(Ordering::Relaxed) {
+        Some(true)
+    } else if TURNS_SEEN.load(Ordering::Relaxed) > 0 {
+        Some(false)
+    } else {
+        None
+    }
 }
 
 /// Flip reasoning visibility. Returns the new state.
@@ -150,6 +183,7 @@ impl Renderer {
     // ─── Reasoning ──────────────────────────────────────────────────────────
 
     pub fn push_thinking(&mut self, delta: &str) {
+        note_reasoning();
         if self.is_paused() || raw_mode() {
             self.think_text.push_str(delta);
             return;
@@ -544,6 +578,34 @@ mod tests {
         // source; the trailing partial line is what remains buffered.
         assert!(r.buffer.ends_with("body"), "{:?}", r.buffer);
         assert!(!r.buffer.starts_with('\n'), "leading padding kept: {:?}", r.buffer);
+    }
+
+    /// These statics are process-wide, so anything touching them serialises —
+    /// the alternative is a test that passes alone and fails in a full run.
+    static OBSERVATION_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// oMLX accepts `chat_template_kwargs` for a template with no thinking flag
+    /// and ignores it, so "the request succeeded" is not evidence the switch
+    /// did anything. Only observed reasoning is.
+    #[test]
+    fn model_reasoning_is_reported_only_once_observed() {
+        let _guard = OBSERVATION_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        forget_model_observations();
+        assert_eq!(model_reasons(), None, "nothing seen yet is not a verdict");
+
+        // A completed turn with no reasoning: a Gemma-style model.
+        note_turn();
+        assert_eq!(model_reasons(), Some(false));
+
+        // Reasoning arriving settles it, and outweighs any number of quiet turns.
+        note_reasoning();
+        assert_eq!(model_reasons(), Some(true));
+        note_turn();
+        assert_eq!(model_reasons(), Some(true));
+
+        // Observations belong to a model, not to the session.
+        forget_model_observations();
+        assert_eq!(model_reasons(), None);
     }
 
     #[test]

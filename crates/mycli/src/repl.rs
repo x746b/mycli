@@ -1541,23 +1541,31 @@ fn apply_thinking_command(
     agent: &mut Agent,
     config: &Config,
 ) {
-    let model_level = is_local_provider(config);
+    let switchable = is_local_provider(config);
 
     let mut set = |on: bool, renderer: &mut Renderer| {
         render::set_thinking_visible(on);
-        if model_level {
-            agent.set_thinking_enabled(on);
-            renderer.notice(&format!(
-                "reasoning {} \x1b[90m(model level)\x1b[0m",
-                if on { "on" } else { "off" }
-            ));
-        } else {
+        if !switchable {
             renderer.notice(&format!(
                 "reasoning {} \x1b[90m(display only — on {} reasoning is set by model choice)\x1b[0m",
                 if on { "on" } else { "off" },
                 config.provider
             ));
+            return;
         }
+        agent.set_thinking_enabled(on);
+        // The request is accepted either way; whether it does anything depends
+        // on the model's chat template, and the only honest evidence for that
+        // is whether this model has ever actually reasoned.
+        let note = match render::model_reasons() {
+            Some(true) => "model level",
+            Some(false) => "no effect — this model has not produced any reasoning",
+            None => "model level, if this model reasons",
+        };
+        renderer.notice(&format!(
+            "reasoning {} \x1b[90m({note})\x1b[0m",
+            if on { "on" } else { "off" }
+        ));
     };
 
     match arg {
@@ -1587,6 +1595,7 @@ async fn rebuild_agent(
     match build_agent(config, new_cancel).await {
         Ok((new_agent, resolved)) => {
             *agent = new_agent;
+            render::forget_model_observations();
             *current_model = resolved.clone();
             *is_first = true;
             eprintln!(
@@ -1787,6 +1796,7 @@ pub async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
         let turn_cancel = arm_turn_cancel();
         agent.set_cancel_token(turn_cancel.clone());
         running.store(true, Ordering::Relaxed);
+        render::note_turn();
         match run_prompt(&agent, &input, &mut renderer, is_first, &turn_cancel).await {
             Ok(_) => {
                 is_first = false;
