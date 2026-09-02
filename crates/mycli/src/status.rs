@@ -16,6 +16,7 @@ use crate::ui::{self, DIM, RESET};
 use parking_lot::Mutex;
 use std::io::{self, Write};
 use std::path::Path;
+use std::time::Duration;
 
 /// Rows held back from the scroll region.
 const FOOTER_ROWS: u16 = 2;
@@ -31,6 +32,14 @@ struct State {
     total_out: u64,
     last_in: u64,
     prev_cumulative_in: u64,
+    /// Prompt tokens the server actually had to process, and the time it took,
+    /// accumulated over the turns of the prompt in flight.
+    pp_tokens: u64,
+    pp_time: Duration,
+    tg_tokens: u64,
+    tg_time: Duration,
+    /// `input_tokens` reported by the previous turn, session-wide.
+    prev_turn_input: Option<u64>,
 }
 
 impl State {
@@ -46,7 +55,34 @@ impl State {
             total_out: 0,
             last_in: 0,
             prev_cumulative_in: 0,
+            pp_tokens: 0,
+            pp_time: Duration::ZERO,
+            tg_tokens: 0,
+            tg_time: Duration::ZERO,
+            prev_turn_input: None,
         }
+    }
+}
+
+/// Tokens per second, or `None` when the sample is too small to mean anything.
+///
+/// A turn that generated nothing, or finished faster than the clock can
+/// usefully resolve, would otherwise report a wild number.
+pub fn rate(tokens: u64, elapsed: Duration) -> Option<f64> {
+    let secs = elapsed.as_secs_f64();
+    if tokens == 0 || secs < 0.005 {
+        return None;
+    }
+    Some(tokens as f64 / secs)
+}
+
+/// Format a throughput compactly: whole numbers once it is fast enough that a
+/// decimal place stops carrying information.
+fn fmt_rate(tps: f64) -> String {
+    if tps >= 100.0 {
+        format!("{tps:.0}")
+    } else {
+        format!("{tps:.1}")
     }
 }
 
@@ -135,6 +171,65 @@ pub fn reset_tokens() {
     state.total_out = 0;
     state.last_in = 0;
     state.prev_cumulative_in = 0;
+    state.prev_turn_input = None;
+    begin_prompt_locked(&mut state);
+}
+
+fn begin_prompt_locked(state: &mut State) {
+    state.pp_tokens = 0;
+    state.pp_time = Duration::ZERO;
+    state.tg_tokens = 0;
+    state.tg_time = Duration::ZERO;
+}
+
+/// Start a fresh throughput measurement for a new user prompt.
+///
+/// The rates shown describe the request in flight, not a session-long average
+/// that would bury a model switch or a change in prompt size.
+pub fn begin_prompt() {
+    begin_prompt_locked(&mut STATE.lock());
+}
+
+/// Fold in one completed turn and repaint.
+///
+/// `timing` is `None` for a turn that produced no text or reasoning — a bare
+/// tool call, which streams as structured arguments rather than deltas, so
+/// there is no first token to divide the turn at. Such a turn contributes no
+/// measurement, but it still advances the prompt-size chain below: skipping it
+/// entirely would make the *next* turn's growth look like two turns' worth.
+///
+/// `input_tokens` counts the whole prompt the turn was sent, so on an agentic
+/// task — where every turn re-sends the conversation plus the last tool result
+/// — summing it straight would count the same context once per turn and report
+/// a prefill rate several times too high. Only the growth since the previous
+/// turn is newly processed work, which is also what a backend with a warm KV
+/// cache actually evaluates. The first turn of a session has no predecessor
+/// and counts in full; so does a turn whose prompt shrank, which means the
+/// context was compacted and the prefix is no longer shared.
+pub fn record_turn(
+    input_tokens: u64,
+    output_tokens: u64,
+    timing: Option<(Duration, Duration)>,
+) {
+    {
+        let mut state = STATE.lock();
+        let fresh = match state.prev_turn_input {
+            Some(prev) if input_tokens > prev => input_tokens - prev,
+            Some(_) => 0,
+            None => input_tokens,
+        };
+        state.prev_turn_input = Some(input_tokens);
+
+        if let Some((prefill, decode)) = timing {
+            if fresh > 0 {
+                state.pp_tokens += fresh;
+                state.pp_time += prefill;
+            }
+            state.tg_tokens += output_tokens;
+            state.tg_time += decode;
+        }
+    }
+    draw();
 }
 
 /// Fold in a fresh cumulative usage report and repaint.
@@ -200,8 +295,18 @@ pub fn draw() {
         format!("–/{}", fmt_tokens(ctx_window as u64))
     };
 
+    // Throughput is omitted until a turn has produced a real measurement,
+    // rather than shown as a placeholder.
+    let mut speed = String::new();
+    if let Some(pp) = rate(state.pp_tokens, state.pp_time) {
+        speed.push_str(&format!(" · pp {} t/s", fmt_rate(pp)));
+    }
+    if let Some(tg) = rate(state.tg_tokens, state.tg_time) {
+        speed.push_str(&format!(" · tg {} t/s", fmt_rate(tg)));
+    }
+
     let left = format!(
-        "↑{} ↓{} · ctx {} · {} · think:{}",
+        "↑{} ↓{}{speed} · ctx {} · {} · think:{}",
         fmt_tokens(state.total_in),
         fmt_tokens(state.total_out),
         ctx,
@@ -232,4 +337,75 @@ pub fn draw() {
     let mut err = io::stderr();
     let _ = err.write_all(out.as_bytes());
     let _ = err.flush();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rate_needs_a_usable_sample() {
+        assert_eq!(rate(0, Duration::from_secs(1)), None);
+        assert_eq!(rate(100, Duration::from_micros(500)), None);
+        assert_eq!(rate(50, Duration::from_secs(2)), Some(25.0));
+    }
+
+    fn rates() -> (Option<f64>, Option<f64>) {
+        let s = STATE.lock();
+        (rate(s.pp_tokens, s.pp_time), rate(s.tg_tokens, s.tg_time))
+    }
+
+    /// Re-sent context must not be counted as prefill work again, or an
+    /// agentic task reports a prompt rate several times too high.
+    #[test]
+    fn only_prompt_growth_counts_as_prefill() {
+        reset_tokens();
+        let second = Duration::from_secs(1);
+
+        // Turn 1: a fresh 1000-token prompt in one second.
+        record_turn(1000, 10, Some((second, second)));
+        assert_eq!(rates().0, Some(1000.0));
+
+        // Turn 2 re-sends those 1000 plus 200 new ones. Counting all 1200
+        // again would claim 1100 t/s; only the 200 are new work.
+        record_turn(1200, 10, Some((second, second)));
+        assert_eq!(rates().0, Some(600.0)); // 1200 new tokens over 2s
+
+        // Generation accumulates in full — none of it is re-sent.
+        assert_eq!(rates().1, Some(10.0)); // 20 tokens over 2s
+        reset_tokens();
+    }
+
+    /// A compacted context is not a shared prefix any more.
+    #[test]
+    fn a_shrinking_prompt_counts_in_full_again() {
+        reset_tokens();
+        let second = Duration::from_secs(1);
+        record_turn(1000, 1, Some((second, second)));
+        record_turn(400, 1, Some((second, second)));
+        // The shrunk turn adds no prefill work; the rate still reflects turn 1.
+        assert_eq!(rates().0, Some(1000.0));
+        reset_tokens();
+    }
+
+    /// A tool-only turn cannot be measured, but it must still advance the
+    /// prompt-size chain or the next turn's growth doubles up.
+    #[test]
+    fn an_unmeasurable_turn_still_advances_the_chain() {
+        reset_tokens();
+        let second = Duration::from_secs(1);
+        record_turn(1000, 10, Some((second, second)));
+        record_turn(1500, 20, None); // tool call, no deltas
+        record_turn(1700, 10, Some((second, second)));
+        // Only 200 tokens are new at the third turn, not 700.
+        assert_eq!(rates().0, Some(600.0)); // (1000 + 200) over 2s
+        reset_tokens();
+    }
+
+    #[test]
+    fn fast_rates_drop_the_decimal() {
+        assert_eq!(fmt_rate(18.42), "18.4");
+        assert_eq!(fmt_rate(99.9), "99.9");
+        assert_eq!(fmt_rate(412.6), "413");
+    }
 }

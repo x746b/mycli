@@ -356,9 +356,40 @@ Two lines pinned to the bottom of the terminal, outside the scroll region:
 
 - **line 1** — working directory and git branch
 - **↑/↓** — cumulative input and output tokens for the session
+- **pp / tg** — prompt processing and token generation throughput (see below)
 - **ctx** — context window fill from the last turn's input tokens (green/yellow/red)
 - **think** — whether reasoning is being displayed
 - Token counters reset on model/provider switch
+
+### Throughput
+
+`pp` (prompt processing / prefill) and `tg` (token generation / decode) are
+measured per user prompt, across every turn it takes:
+
+```
+↑2.8k ↓128 · pp 626 t/s · tg 25.9 t/s · ctx 8.5%/32.8k · code · think:on
+```
+
+A turn splits cleanly in two — the request goes out and nothing comes back
+until the prompt has been processed — so the wait for the first token is
+prefill and everything after it is generation. Tool execution happens after
+the turn completes, so it never lands inside either window.
+
+Two things worth knowing about the numbers:
+
+- **Only prompt *growth* counts as prefill.** Every turn of an agentic task
+  re-sends the whole conversation plus the last tool result, so summing each
+  turn's `input_tokens` would count the same context once per turn and report
+  a prefill rate several times too high. This matches what a server reports as
+  "excluding cached".
+- **They are measured client-side**, so prefill includes the HTTP round trip
+  and any queueing or model warm-up on the server. Expect it to read lower
+  than the server's own figure, especially on the first request after the
+  model has been idle. Generation is unaffected.
+
+A turn that emits only a tool call streams structured arguments rather than
+text, so it has no first token to divide on and contributes no measurement —
+it still advances the prompt-size accounting.
 
 ### Tool Capabilities
 - **Filesystem:** Read, Write, Edit (with fuzzy matching + line-range mode), Glob, Grep

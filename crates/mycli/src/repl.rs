@@ -28,6 +28,7 @@ use std::collections::HashSet;
 use std::io::{self, Write};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 // ─── Permission policy ──────────────────────────────────────────────────────
@@ -909,10 +910,39 @@ async fn run_prompt(
 
     let mut stream = agent.run_stream(prompt);
 
+    // Throughput. A turn splits cleanly in two: the request goes out and
+    // nothing comes back until the prompt has been processed, so the wait for
+    // the first token is prefill and everything after it is generation. Tool
+    // execution happens after `TurnComplete`, so it never lands in either
+    // window. The token accounting is in `status::record_turn`.
+    status::begin_prompt();
+    let mut request_at: Option<Instant> = None;
+    let mut first_token_at: Option<Instant> = None;
+
     while let Some(event) = stream.next().await {
         match event {
-            AgentEvent::TextDelta(text) => renderer.push_text(&text),
-            AgentEvent::ThinkingDelta(text) => renderer.push_thinking(&text),
+            AgentEvent::ModelRequestStart { .. } => {
+                request_at = Some(Instant::now());
+                first_token_at = None;
+            }
+            AgentEvent::TextDelta(text) => {
+                first_token_at.get_or_insert_with(Instant::now);
+                renderer.push_text(&text);
+            }
+            AgentEvent::ThinkingDelta(text) => {
+                first_token_at.get_or_insert_with(Instant::now);
+                renderer.push_thinking(&text);
+            }
+            AgentEvent::TurnComplete { usage, .. } => {
+                let timing = match (request_at, first_token_at) {
+                    (Some(sent), Some(first)) => {
+                        Some((first.saturating_duration_since(sent), first.elapsed()))
+                    }
+                    _ => None,
+                };
+                status::record_turn(usage.input_tokens, usage.output_tokens, timing);
+                request_at = None;
+            }
             AgentEvent::ToolStart { name, input, .. } => renderer.tool_start(&name, &input),
             AgentEvent::ToolEnd {
                 name,
