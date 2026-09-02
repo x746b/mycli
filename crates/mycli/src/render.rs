@@ -114,11 +114,7 @@ impl Renderer {
         if self.in_thinking {
             self.end_thinking();
         }
-        // Models routinely emit a couple of bare newlines before their first
-        // real token; rendering those as markdown leaves the transcript full
-        // of stray blank lines. Swallow leading whitespace; the marker is
-        // written by `print_markdown`, which can see what it precedes.
-        if !self.text_block_open && !raw_mode() && delta.trim().is_empty() {
+        if !raw_mode() && self.is_leading_padding(delta) {
             return;
         }
         self.buffer.push_str(delta);
@@ -135,6 +131,20 @@ impl Renderer {
             self.buffer.drain(..cut);
             self.print_markdown(&to_flush);
         }
+    }
+
+    /// Is this delta blank padding that arrived before any real content?
+    ///
+    /// Models routinely emit a couple of bare newlines before their first
+    /// token, and rendering those leaves the transcript full of stray blank
+    /// lines. Only the *leading* run qualifies: the buffer must still be empty
+    /// as well. Testing `text_block_open` alone dropped every newline-only
+    /// delta up to the first flush — and since a flush needs a newline in the
+    /// buffer, the first flush never came and the whole response arrived as a
+    /// single line, with headings glued to the prose before them and tables
+    /// collapsed onto one row.
+    fn is_leading_padding(&self, delta: &str) -> bool {
+        !self.text_block_open && self.buffer.is_empty() && delta.trim().is_empty()
     }
 
     // ─── Reasoning ──────────────────────────────────────────────────────────
@@ -506,6 +516,34 @@ mod tests {
             summarize_result("Bash", "boom", 1, true, Duration::from_millis(2500)),
             "Bash failed · 2.5s"
         );
+    }
+
+    /// The regression that made every response arrive as one line.
+    #[test]
+    fn newlines_survive_before_the_first_flush() {
+        let mut r = Renderer::new();
+        // Blank deltas before any content are padding.
+        assert!(r.is_leading_padding("\n"));
+        assert!(r.is_leading_padding("\n\n"));
+
+        r.buffer.push_str("# Heading");
+        // Now a newline-only delta is content: it is what makes the next line
+        // a new block rather than a continuation of this one.
+        assert!(!r.is_leading_padding("\n"));
+        assert!(!r.is_leading_padding("\n\n"));
+    }
+
+    /// End to end: deltas in, buffer keeps every newline the model sent.
+    #[test]
+    fn streamed_deltas_keep_their_structure() {
+        let mut r = Renderer::new();
+        for delta in ["\n\n", "# Title", "\n", "\n", "## Part 1", "\n", "body"] {
+            r.push_text(delta);
+        }
+        // Whatever has not flushed yet plus what has must reconstruct the
+        // source; the trailing partial line is what remains buffered.
+        assert!(r.buffer.ends_with("body"), "{:?}", r.buffer);
+        assert!(!r.buffer.starts_with('\n'), "leading padding kept: {:?}", r.buffer);
     }
 
     #[test]

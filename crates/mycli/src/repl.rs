@@ -353,25 +353,28 @@ impl ConditionalEventHandler for ToggleThinking {
 
 // ─── Prompt ─────────────────────────────────────────────────────────────────
 
-/// Rule drawn above and below the input.
+/// Draw the input frame, then step back onto the line inside it.
 ///
-/// Full-width rules rather than a box: rustyline owns the redraw of the input
-/// line and clears to end-of-line on every keystroke, so a box's right edge
-/// cannot survive typing, and its left edge cannot be repeated on the rows a
-/// wrapped or pasted input spills onto. Rules frame the input just as well and
-/// stay correct in both cases.
-fn prompt_rule() {
-    print!("{DIM}{}{RESET}\n", "─".repeat(ui::text_width()));
+/// Both rules are drawn *before* the editor runs. rustyline owns the input
+/// line and clears to end-of-line on every keystroke, so anything below it has
+/// to be on screen already — there is no "after" in which to close the box.
+/// Full-width rules rather than a bordered box for the same reason: the right
+/// edge could not survive typing, and the left edge could not be repeated on
+/// the rows a wrapped or pasted input spills onto.
+///
+/// If the input does wrap, rustyline overwrites the closing rule as it grows,
+/// which is exactly what the display looked like before — the frame degrades
+/// to the old behaviour rather than corrupting.
+fn prompt_open() {
+    let rule = "─".repeat(ui::text_width());
+    print!("\n{DIM}{rule}{RESET}\n\n{DIM}{rule}{RESET}\n\x1b[2A");
     let _ = io::stdout().flush();
 }
 
-fn prompt_open() {
-    print!("\n");
-    prompt_rule();
-}
-
+/// Step past the closing rule that `prompt_open` already drew.
 fn prompt_close() {
-    prompt_rule();
+    print!("\n");
+    let _ = io::stdout().flush();
 }
 
 fn prompt_line() -> String {

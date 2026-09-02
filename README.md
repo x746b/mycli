@@ -313,6 +313,24 @@ Text streams as it arrives, but a construct whose layout depends on lines that
 have not arrived yet — a table, a fenced code block — is held until complete.
 Rendering a table row at a time is what produced unaligned columns before.
 
+### Input
+
+Both rules of the input frame are drawn before the editor starts, so the frame
+reads as closed while you type:
+
+```
+────────────────────────────────────────────────────────────
+ › hey there
+────────────────────────────────────────────────────────────
+```
+
+There is no bordered box because rustyline owns the input line and clears to
+end-of-line on every keystroke: a right edge could not survive typing, and a
+left edge could not be repeated on the rows a wrapped or pasted input spills
+onto. For the same reason the closing rule has to exist *before* the editor
+runs — there is no "after" in which to draw it. An input long enough to wrap
+overwrites that rule as it grows.
+
 ### Checking the Terminal Output
 
 A raw capture (`script`) records the byte stream, not the screen, so cursor
