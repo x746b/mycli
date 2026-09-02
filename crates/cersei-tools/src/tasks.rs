@@ -303,6 +303,13 @@ mod tests {
     use super::*;
     use crate::permissions::AllowAll;
 
+    /// The task registry is process-wide, so these tests cannot run beside
+    /// each other: `clear_tasks` wipes it for everyone, and a test that
+    /// created a task moments earlier then fails to find it. That is what
+    /// made `test_task_stop` fail sporadically under a full workspace run
+    /// while passing every time in isolation.
+    static REGISTRY_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
     fn test_ctx() -> ToolContext {
         ToolContext {
             working_dir: std::env::temp_dir(),
@@ -316,6 +323,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_task_full_lifecycle() {
+        let _guard = REGISTRY_LOCK.lock();
         clear_tasks();
         let ctx = ToolContext { session_id: format!("task-lifecycle-{}", uuid::Uuid::new_v4()), ..test_ctx() };
 
@@ -359,6 +367,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_task_stop() {
+        let _guard = REGISTRY_LOCK.lock();
         let ctx = ToolContext { session_id: format!("stop-{}", uuid::Uuid::new_v4()), ..test_ctx() };
 
         let create = TaskCreateTool;
@@ -366,7 +375,25 @@ mod tests {
         let id = r.content.split('\'').nth(1).unwrap().to_string();
 
         let stop = TaskStopTool;
-        stop.execute(serde_json::json!({"id": &id}), &ctx).await;
+        let r = stop.execute(serde_json::json!({"id": &id}), &ctx).await;
+        assert!(!r.is_error, "stop reported: {}", r.content);
         assert_eq!(get_task(&id).unwrap().status, TaskStatus::Stopped);
     }
+
+    /// `clear_tasks` empties the registry for the whole process — the reason
+    /// every test here holds the lock.
+    #[tokio::test]
+    async fn test_clear_tasks_empties_the_registry() {
+        let _guard = REGISTRY_LOCK.lock();
+        let ctx = test_ctx();
+
+        TaskCreateTool
+            .execute(serde_json::json!({"description": "transient"}), &ctx)
+            .await;
+        assert!(!list_tasks().is_empty());
+
+        clear_tasks();
+        assert!(list_tasks().is_empty());
+    }
 }
+
