@@ -383,9 +383,17 @@ Two things worth knowing about the numbers:
   a prefill rate several times too high. This matches what a server reports as
   "excluding cached".
 - **They are measured client-side**, so prefill includes the HTTP round trip
-  and any queueing or model warm-up on the server. Expect it to read lower
-  than the server's own figure, especially on the first request after the
-  model has been idle. Generation is unaffected.
+  and any queueing or model warm-up on the server. Against a warm local server
+  this is small — measured 2276 t/s where oMLX reported 2315 — but the first
+  request after the model has been idle reads noticeably lower (2444 against
+  2877 on the same machine). Generation is unaffected either way.
+- **Prompt growth is a stand-in for uncached tokens**, and the two only agree
+  when the backend actually reuses a KV cache across turns. A backend that
+  reprocesses the whole prompt every turn does more prefill work than the
+  growth suggests, so `pp` reads low on long agentic tasks. Reading the real
+  figure would mean plumbing the provider's own cached-token count (OpenAI
+  reports one in `usage.prompt_tokens_details`) through `Usage`, which is not
+  wired up.
 
 A turn that emits only a tool call streams structured arguments rather than
 text, so it has no first token to divide on and contributes no measurement —
