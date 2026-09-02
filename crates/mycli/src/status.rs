@@ -192,40 +192,66 @@ pub fn begin_prompt() {
 
 /// Fold in one completed turn and repaint.
 ///
-/// `timing` is `None` for a turn that produced no text or reasoning — a bare
-/// tool call, which streams as structured arguments rather than deltas, so
-/// there is no first token to divide the turn at. Such a turn contributes no
-/// measurement, but it still advances the prompt-size chain below: skipping it
-/// entirely would make the *next* turn's growth look like two turns' worth.
+/// The provider's own figures are used wherever it reports them, so the
+/// numbers match what the server says it did:
 ///
-/// `input_tokens` counts the whole prompt the turn was sent, so on an agentic
-/// task — where every turn re-sends the conversation plus the last tool result
-/// — summing it straight would count the same context once per turn and report
-/// a prefill rate several times too high. Only the growth since the previous
-/// turn is newly processed work, which is also what a backend with a warm KV
-/// cache actually evaluates. The first turn of a session has no predecessor
-/// and counts in full; so does a turn whose prompt shrank, which means the
-/// context was compacted and the prefix is no longer shared.
-pub fn record_turn(
-    input_tokens: u64,
-    output_tokens: u64,
-    timing: Option<(Duration, Duration)>,
-) {
+/// * **Prefill tokens.** `input_tokens` is the whole prompt the turn was sent,
+///   which on an agentic task re-sends the conversation every turn. What was
+///   actually processed is that minus whatever the cache served. When the
+///   provider reports no cache count, prompt *growth* since the previous turn
+///   stands in — right for a backend that reuses a KV cache, low for one that
+///   does not.
+/// * **Durations.** A server that times its own phases is measuring compute;
+///   the client-side window additionally contains the HTTP round trip and any
+///   queueing. Prefer the server's.
+///
+/// `client_timing` is `None` for a turn that produced no text or reasoning — a
+/// bare tool call, which streams structured arguments rather than deltas, so
+/// there is no first token to divide the turn at. Such a turn is still
+/// measurable when the provider reports durations. Either way it advances the
+/// prompt-size chain below: skipping it would make the *next* turn's growth
+/// look like two turns' worth.
+pub fn record_turn(usage: &cersei_types::Usage, client_timing: Option<(Duration, Duration)>) {
     {
         let mut state = STATE.lock();
-        let fresh = match state.prev_turn_input {
-            Some(prev) if input_tokens > prev => input_tokens - prev,
-            Some(_) => 0,
-            None => input_tokens,
-        };
-        state.prev_turn_input = Some(input_tokens);
 
-        if let Some((prefill, decode)) = timing {
-            if fresh > 0 {
-                state.pp_tokens += fresh;
+        // Which tokens count depends on which clock is being used.
+        let (prefill_tokens, prefill) = match usage.prefill_seconds() {
+            // The provider timed the work it actually did, so its rate is the
+            // whole prompt over that time — cache hits cost it no compute and
+            // no time. Dividing uncached tokens by the same duration would
+            // report a number the server never claimed.
+            Some(secs) => (usage.input_tokens, Some(Duration::from_secs_f64(secs))),
+            // Client-timed instead: the window is wall clock and covers the
+            // whole request, so counting cached tokens would flatter a warm
+            // cache. Use what the server can't have had ready.
+            None => {
+                let processed = match usage.cached_input_tokens() {
+                    Some(cached) => usage.input_tokens.saturating_sub(cached),
+                    None => match state.prev_turn_input {
+                        Some(prev) if usage.input_tokens > prev => usage.input_tokens - prev,
+                        Some(_) => 0,
+                        None => usage.input_tokens,
+                    },
+                };
+                (processed, client_timing.map(|(prefill, _)| prefill))
+            }
+        };
+        state.prev_turn_input = Some(usage.input_tokens);
+
+        let decode = usage
+            .decode_seconds()
+            .map(Duration::from_secs_f64)
+            .or_else(|| client_timing.map(|(_, decode)| decode));
+
+        if let Some(prefill) = prefill {
+            if prefill_tokens > 0 {
+                state.pp_tokens += prefill_tokens;
                 state.pp_time += prefill;
             }
-            state.tg_tokens += output_tokens;
+        }
+        if let Some(decode) = decode {
+            state.tg_tokens += usage.output_tokens;
             state.tg_time += decode;
         }
     }
@@ -355,24 +381,110 @@ mod tests {
         (rate(s.pp_tokens, s.pp_time), rate(s.tg_tokens, s.tg_time))
     }
 
-    /// Re-sent context must not be counted as prefill work again, or an
-    /// agentic task reports a prompt rate several times too high.
+    fn usage(input: u64, output: u64, provider: serde_json::Value) -> cersei_types::Usage {
+        cersei_types::Usage {
+            input_tokens: input,
+            output_tokens: output,
+            provider_usage: provider,
+            ..Default::default()
+        }
+    }
+
+    const NONE: serde_json::Value = serde_json::Value::Null;
+
+    /// Without a cache count, re-sent context must not be charged as prefill
+    /// work again, or an agentic task reports a prompt rate several times too
+    /// high.
     #[test]
-    fn only_prompt_growth_counts_as_prefill() {
+    fn only_prompt_growth_counts_when_the_cache_is_unreported() {
         reset_tokens();
         let second = Duration::from_secs(1);
 
-        // Turn 1: a fresh 1000-token prompt in one second.
-        record_turn(1000, 10, Some((second, second)));
+        record_turn(&usage(1000, 10, NONE), Some((second, second)));
         assert_eq!(rates().0, Some(1000.0));
 
         // Turn 2 re-sends those 1000 plus 200 new ones. Counting all 1200
         // again would claim 1100 t/s; only the 200 are new work.
-        record_turn(1200, 10, Some((second, second)));
+        record_turn(&usage(1200, 10, NONE), Some((second, second)));
         assert_eq!(rates().0, Some(600.0)); // 1200 new tokens over 2s
 
         // Generation accumulates in full — none of it is re-sent.
         assert_eq!(rates().1, Some(10.0)); // 20 tokens over 2s
+        reset_tokens();
+    }
+
+    /// On the client clock, a reported cache count is exact and beats the
+    /// growth guess.
+    #[test]
+    fn a_reported_cache_count_is_used_verbatim() {
+        reset_tokens();
+        let second = Duration::from_secs(1);
+        let cached = |n: u64| serde_json::json!({"prompt_tokens_details": {"cached_tokens": n}});
+
+        record_turn(&usage(1000, 10, cached(0)), Some((second, second)));
+        assert_eq!(rates().0, Some(1000.0));
+
+        // The prompt grew by 200, but the server had to reprocess 700 of it.
+        record_turn(&usage(1200, 10, cached(500)), Some((second, second)));
+        assert_eq!(rates().0, Some(850.0)); // (1000 + 700) over 2s
+        reset_tokens();
+    }
+
+    /// On the provider's own clock the whole prompt counts, cache hits
+    /// included — that duration covers only the work it really did, so this
+    /// reproduces the figure the server itself reports.
+    #[test]
+    fn a_provider_clock_counts_the_whole_prompt() {
+        reset_tokens();
+        record_turn(
+            &usage(
+                2772,
+                100,
+                serde_json::json!({
+                    "prompt_tokens_details": {"cached_tokens": 2048},
+                    "prompt_eval_duration": 0.72,
+                }),
+            ),
+            Some((Duration::from_secs(9), Duration::from_secs(9))),
+        );
+        // 2772 / 0.72, not (2772 - 2048) / 0.72.
+        assert_eq!(rates().0.map(|r| r.round()), Some(3850.0));
+        reset_tokens();
+    }
+
+    /// When the server times its own phases, its numbers win over the
+    /// client-side window, which also contains the round trip.
+    #[test]
+    fn provider_durations_beat_client_timing() {
+        reset_tokens();
+        let slow = Duration::from_secs(10);
+        record_turn(
+            &usage(
+                1000,
+                50,
+                serde_json::json!({
+                    "prompt_eval_duration": 0.5,
+                    "generation_duration": 2.0,
+                }),
+            ),
+            Some((slow, slow)),
+        );
+        assert_eq!(rates().0, Some(2000.0)); // 1000 / 0.5, not 1000 / 10
+        assert_eq!(rates().1, Some(25.0)); // 50 / 2.0, not 50 / 10
+        reset_tokens();
+    }
+
+    /// A tool-only turn has no first token, but the provider may still have
+    /// timed it — and either way it must advance the prompt-size chain.
+    #[test]
+    fn an_unmeasurable_turn_still_advances_the_chain() {
+        reset_tokens();
+        let second = Duration::from_secs(1);
+        record_turn(&usage(1000, 10, NONE), Some((second, second)));
+        record_turn(&usage(1500, 20, NONE), None); // tool call, no deltas
+        record_turn(&usage(1700, 10, NONE), Some((second, second)));
+        // Only 200 tokens are new at the third turn, not 700.
+        assert_eq!(rates().0, Some(600.0)); // (1000 + 200) over 2s
         reset_tokens();
     }
 
@@ -381,24 +493,10 @@ mod tests {
     fn a_shrinking_prompt_counts_in_full_again() {
         reset_tokens();
         let second = Duration::from_secs(1);
-        record_turn(1000, 1, Some((second, second)));
-        record_turn(400, 1, Some((second, second)));
+        record_turn(&usage(1000, 1, NONE), Some((second, second)));
+        record_turn(&usage(400, 1, NONE), Some((second, second)));
         // The shrunk turn adds no prefill work; the rate still reflects turn 1.
         assert_eq!(rates().0, Some(1000.0));
-        reset_tokens();
-    }
-
-    /// A tool-only turn cannot be measured, but it must still advance the
-    /// prompt-size chain or the next turn's growth doubles up.
-    #[test]
-    fn an_unmeasurable_turn_still_advances_the_chain() {
-        reset_tokens();
-        let second = Duration::from_secs(1);
-        record_turn(1000, 10, Some((second, second)));
-        record_turn(1500, 20, None); // tool call, no deltas
-        record_turn(1700, 10, Some((second, second)));
-        // Only 200 tokens are new at the third turn, not 700.
-        assert_eq!(rates().0, Some(600.0)); // (1000 + 200) over 2s
         reset_tokens();
     }
 

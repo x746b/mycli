@@ -260,6 +260,94 @@ impl Usage {
         } else if other.cost_usd.is_some() {
             self.cost_usd = other.cost_usd;
         }
+        // Provider fields do not add up — a duration or a cache count from two
+        // responses cannot be summed into one meaningful number — so the most
+        // recent report wins. A response carries exactly one usage object, so
+        // for a single response this simply preserves it.
+        if !other.provider_usage.is_null() {
+            self.provider_usage = other.provider_usage.clone();
+        }
+    }
+
+    /// Input tokens the provider served from a prompt cache, when it reports
+    /// one. `input_tokens` minus this is the prompt it actually processed.
+    ///
+    /// OpenAI-compatible servers report `prompt_tokens_details.cached_tokens`;
+    /// Anthropic reports `cache_read_input_tokens`.
+    pub fn cached_input_tokens(&self) -> Option<u64> {
+        self.provider_usage
+            .get("prompt_tokens_details")
+            .and_then(|d| d.get("cached_tokens"))
+            .or_else(|| self.provider_usage.get("cache_read_input_tokens"))
+            .and_then(|v| v.as_u64())
+    }
+
+    /// Seconds the provider spent processing the prompt, when it reports it.
+    pub fn prefill_seconds(&self) -> Option<f64> {
+        self.positive_seconds("prompt_eval_duration")
+    }
+
+    /// Seconds the provider spent generating, when it reports it.
+    pub fn decode_seconds(&self) -> Option<f64> {
+        self.positive_seconds("generation_duration")
+    }
+
+    /// A reported duration, rejected when it is zero: servers round these to
+    /// a couple of decimal places, so a short turn reports 0.0 and would give
+    /// an infinite rate.
+    fn positive_seconds(&self, key: &str) -> Option<f64> {
+        self.provider_usage
+            .get(key)
+            .and_then(|v| v.as_f64())
+            .filter(|secs| *secs > 0.0)
+    }
+}
+
+#[cfg(test)]
+mod usage_tests {
+    use super::*;
+
+    fn with(provider_usage: serde_json::Value) -> Usage {
+        Usage {
+            input_tokens: 613,
+            output_tokens: 8,
+            provider_usage,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn reads_openai_and_anthropic_cache_counts() {
+        let openai = with(serde_json::json!({"prompt_tokens_details": {"cached_tokens": 512}}));
+        assert_eq!(openai.cached_input_tokens(), Some(512));
+
+        let anthropic = with(serde_json::json!({"cache_read_input_tokens": 400}));
+        assert_eq!(anthropic.cached_input_tokens(), Some(400));
+
+        assert_eq!(with(serde_json::Value::Null).cached_input_tokens(), None);
+    }
+
+    /// A turn short enough to round to zero must not report an infinite rate.
+    #[test]
+    fn rejects_zero_durations() {
+        let u = with(serde_json::json!({
+            "prompt_eval_duration": 0.65,
+            "generation_duration": 0.0,
+        }));
+        assert_eq!(u.prefill_seconds(), Some(0.65));
+        assert_eq!(u.decode_seconds(), None);
+    }
+
+    /// Provider fields must survive the merge the stream accumulator does.
+    #[test]
+    fn merge_carries_provider_fields_forward() {
+        let mut acc = Usage::default();
+        acc.merge(&with(serde_json::json!({"generation_duration": 1.5})));
+        assert_eq!(acc.decode_seconds(), Some(1.5));
+
+        // A later report with nothing to say leaves the earlier one alone.
+        acc.merge(&Usage::default());
+        assert_eq!(acc.decode_seconds(), Some(1.5));
     }
 }
 

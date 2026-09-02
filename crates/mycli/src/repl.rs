@@ -940,7 +940,7 @@ async fn run_prompt(
                     }
                     _ => None,
                 };
-                status::record_turn(usage.input_tokens, usage.output_tokens, timing);
+                status::record_turn(&usage, timing);
                 request_at = None;
             }
             AgentEvent::ToolStart { name, input, .. } => renderer.tool_start(&name, &input),

@@ -489,8 +489,12 @@ impl Provider for OpenAi {
                                                     .as_u64()
                                                     .unwrap_or(0),
                                                 cost_usd: None,
-                                                provider_usage:
-                                                    serde_json::Value::Null,
+                                                // Kept whole: servers report
+                                                // cache hits and per-phase
+                                                // durations here, and which
+                                                // fields exist varies by
+                                                // provider.
+                                                provider_usage: usage_obj.clone(),
                                             });
                                         }
                                     }

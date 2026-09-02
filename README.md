@@ -370,6 +370,79 @@ measured per user prompt, across every turn it takes:
 ↑2.8k ↓128 · pp 626 t/s · tg 25.9 t/s · ctx 8.5%/32.8k · code · think:on
 ```
 
+Where the provider reports its own per-phase timings, those are used and the
+numbers match what the server itself reports. oMLX returns
+`prompt_eval_duration`, `generation_duration` and `prompt_tokens_details.
+cached_tokens` in the streaming usage object, so `pp` and `tg` agree with its
+dashboard and logs — a turn logged as `958 tokens in 9.89s (104.1 tok/s)` shows
+as `tg 104 t/s`.
+
+Without those fields the rates are measured client-side. A turn splits cleanly
+in two — the request goes out and nothing comes back until the prompt has been
+processed — so the wait for the first token is prefill and everything after it
+is generation. Tool execution happens after the turn completes, so it never
+lands inside either window.
+
+The two clocks count prompt tokens differently, and on purpose:
+
+- **On the provider's clock, the whole prompt counts**, cache hits included.
+  That duration covers only the work the server really did, so dividing by
+  anything less would report a rate it never claimed.
+- **On the client clock, only tokens the server cannot have had ready count** —
+  it is wall-clock time for the whole request, so counting cached tokens would
+  flatter a warm cache. The provider's cached-token count is used when there is
+  one; otherwise prompt *growth* since the previous turn stands in, which is
+  right for a backend that reuses a KV cache and low for one that does not.
+
+Client-side prefill also contains the HTTP round trip and any queueing, so it
+reads below the server's figure — slightly on a warm local server, noticeably
+on the first request after the model has been idle. Generation is unaffected
+either way.
+
+A turn that emits only a tool call streams structured arguments rather than
+text, so it has no first token to divide on. It is still measurable when the
+provider reports durations, and either way it advances the prompt-size
+accounting.
+
+### Checking the Terminal Output
+
+A raw capture (`script`) records the byte stream, not the screen, so cursor
+motion and scroll-region bugs are invisible in it. `tools/vt.py` replays a
+capture onto a virtual screen and prints what a terminal would actually show:
+
+```bash
+printf '/exit\n' | script -qc "stty rows 30 cols 110; ./target/debug/mycli" /dev/null \
+  | python3 tools/vt.py 30 110
+```
+
+Each line is numbered, and the cursor position and scroll region are reported
+at the end.
+
+### Status Bar
+
+Two lines pinned to the bottom of the terminal, outside the scroll region:
+
+```
+/opt/mycli (main)
+↑2.8k ↓1.1k · ctx 4.2%/128k · code · think:on          (omlx) mlx-community_Qwen3.8-27B-mxfp8
+```
+
+- **line 1** — working directory and git branch
+- **↑/↓** — cumulative input and output tokens for the session
+- **pp / tg** — prompt processing and token generation throughput (see below)
+- **ctx** — context window fill from the last turn's input tokens (green/yellow/red)
+- **think** — whether reasoning is being displayed
+- Token counters reset on model/provider switch
+
+### Throughput
+
+`pp` (prompt processing / prefill) and `tg` (token generation / decode) are
+measured per user prompt, across every turn it takes:
+
+```
+↑2.8k ↓128 · pp 626 t/s · tg 25.9 t/s · ctx 8.5%/32.8k · code · think:on
+```
+
 A turn splits cleanly in two — the request goes out and nothing comes back
 until the prompt has been processed — so the wait for the first token is
 prefill and everything after it is generation. Tool execution happens after
