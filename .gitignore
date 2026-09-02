@@ -3,3 +3,4 @@ Cargo.lock
 bench/results/
 /mycli
 /bin/
+/latex_test.md
