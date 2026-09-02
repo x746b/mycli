@@ -169,7 +169,7 @@ mycli --cloud deepseek -y "refactor main.rs"   # auto-approve tools
 | `/persona` | Interactive persona picker |
 | `/persona <name>` | Switch persona (`code` / `redteam` / `blueteam` / `data` / `math` / `agentic`) |
 | `/usage` | Show cloud balances / spend (Kimi, DeepSeek, OpenAI) |
-| `/mcp` | Show MCP server status |
+| `/mcp` | Show each MCP server's status — tools discovered, or why it failed |
 | `/thinking` | Toggle reasoning display (same as Ctrl+O) |
 | `/thinking on\|off` | Force reasoning on or off |
 | `/thinking last` | Reprint the last reasoning block |
@@ -477,7 +477,9 @@ it still advances the prompt-size accounting.
 - **Shell:** Bash execution with permission control
 - **Web:** WebFetch for reading URLs/documentation
 - **Skills:** Bundled prompt templates (commit, review, debug, simplify, etc.)
-- **MCP:** Connect to any MCP server — tools auto-discovered and injected
+- **MCP:** Connect to any MCP server — tools auto-discovered and injected.
+  Servers start on the `full` tool tier only; `/mcp` reports each one by name
+  with its tool count or the reason it failed to start.
 
 ### Edit Tool Resilience
 Local models often get `old_string` wrong in edit operations. MyCLI handles this with:

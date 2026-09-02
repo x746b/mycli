@@ -61,6 +61,17 @@ fn cancel_current_turn() {
     }
 }
 
+/// Outcome of the last MCP connection attempt: server name, and either the
+/// number of tools it exposed or why it failed.
+///
+/// `/mcp` runs long after the agent was built and has no handle on the
+/// manager, so the result is recorded here rather than guessed at.
+static MCP_REPORT: Mutex<Vec<(String, std::result::Result<usize, String>)>> = Mutex::new(Vec::new());
+
+fn set_mcp_report(report: Vec<(String, std::result::Result<usize, String>)>) {
+    *MCP_REPORT.lock() = report;
+}
+
 /// Bumped by the renderer when it begins handling a `ToolStart`, after every
 /// earlier event has been written. The interactive policy waits for it before
 /// drawing a dialog, so an approval panel can never appear in the middle of the
@@ -766,25 +777,43 @@ async fn build_agent(config: &Config, cancel_token: CancellationToken) -> anyhow
             })
             .collect();
 
-        eprintln!("  \x1b[90mConnecting to {} MCP server(s)...\x1b[0m", configs.len());
         match cersei_mcp::McpManager::connect(&configs).await {
             Ok(mgr) => {
                 let mgr = Arc::new(mgr);
                 let mcp_tools = mgr.tool_definitions().await;
-                if mcp_tools.is_empty() {
-                    eprintln!("  \x1b[33mMCP: connected but no tools discovered\x1b[0m");
-                } else {
-                    for tool_def in &mcp_tools {
-                        eprintln!("  \x1b[90mmcp: +{}\x1b[0m", tool_def.name);
-                        tools.push(Box::new(McpToolBridge {
-                            def: tool_def.clone(),
-                            manager: Arc::clone(&mgr),
-                        }));
+
+                // Report each server by name. A server that failed to start
+                // and one that started but exposed nothing both leave the
+                // tool list empty, and they need different fixes.
+                let mut report = Vec::new();
+                for (name, err) in mgr.failures() {
+                    // The error already says it is about an MCP server.
+                    let err = err.trim_start_matches("MCP error: ").to_string();
+                    eprintln!("  {RED}mcp {name}: {err}{RESET}");
+                    report.push((name.clone(), Err(err)));
+                }
+                for (name, count) in mgr.tool_counts().await {
+                    if count == 0 {
+                        eprintln!(
+                            "  {YELLOW}mcp {name}: started but exposed no tools{RESET}"
+                        );
+                    } else {
+                        eprintln!("  {DIM}mcp {name}: {count} tools{RESET}");
                     }
+                    report.push((name, Ok(count)));
+                }
+                set_mcp_report(report);
+
+                for tool_def in &mcp_tools {
+                    tools.push(Box::new(McpToolBridge {
+                        def: tool_def.clone(),
+                        manager: Arc::clone(&mgr),
+                    }));
                 }
             }
             Err(e) => {
-                eprintln!("  \x1b[33mMCP connection failed: {e}\x1b[0m");
+                eprintln!("  {RED}mcp: connection failed — {e}{RESET}");
+                set_mcp_report(vec![("all servers".into(), Err(e.to_string()))]);
             }
         }
     }
@@ -1328,24 +1357,32 @@ fn handle_command(cmd: &str, args: &str, config: &Config, current_model: &str) -
             }
         }
         "mcp" => {
-            let tier = config::resolve_tool_tier(config);
-            if tier != "full" {
-                eprintln!("  \x1b[33mMCP requires full tool tier. Use /tools full to enable.\x1b[0m");
+            if config.mcp.is_empty() {
+                eprintln!("  {DIM}No MCP servers configured. Add [[mcp]] to ~/.mycli/config.toml{RESET}");
                 return CommandResult::Continue;
             }
-            if config.mcp.is_empty() {
-                eprintln!("  \x1b[90mNo MCP servers configured. Add [[mcp]] to ~/.mycli/config.toml\x1b[0m");
+
+            let tier = config::resolve_tool_tier(config);
+            eprintln!("{ACCENT}MCP servers:{RESET}");
+            let report = MCP_REPORT.lock().clone();
+            for entry in &config.mcp {
+                let status = report.iter().find(|(name, _)| name == &entry.name);
+                let status = match status {
+                    Some((_, Ok(0))) => format!("{YELLOW}started, no tools{RESET}"),
+                    Some((_, Ok(n))) => format!("{GREEN}{n} tools{RESET}"),
+                    Some((_, Err(e))) => format!("{RED}{e}{RESET}"),
+                    None if tier == "full" => format!("{DIM}not connected{RESET}"),
+                    // Servers are only started on the full tier, so on a lower
+                    // one there is nothing to report and nothing is wrong.
+                    None => format!("{DIM}not loaded — tool tier is '{tier}'{RESET}"),
+                };
+                eprintln!("  {} {DIM}— {} {}{RESET}", entry.name, entry.command, entry.args.join(" "));
+                eprintln!("    {status}");
+            }
+            if tier != "full" {
+                eprintln!("  {DIM}MCP servers start on the full tool tier: /tools full{RESET}");
             } else {
-                eprintln!("  \x1b[36mMCP servers:\x1b[0m");
-                for entry in &config.mcp {
-                    let args_str = entry.args.join(" ");
-                    eprintln!("    {} — {} {}", entry.name, entry.command, args_str);
-                }
-                // Show which MCP tools are currently loaded
-                let mcp_tool_count = build_tools("_skip_", &config.working_dir).len();
-                let all_tool_count = build_tools(tier, &config.working_dir).len();
-                let _ = (mcp_tool_count, all_tool_count); // suppress unused
-                eprintln!("  \x1b[90mMCP tools are injected at startup. Use /cloud or /tools full to reload.\x1b[0m");
+                eprintln!("  {DIM}Servers start when the agent is built; /tools or /cloud reloads them.{RESET}");
             }
             CommandResult::Continue
         }

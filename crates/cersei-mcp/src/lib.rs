@@ -266,12 +266,21 @@ impl McpClient {
 /// Manages connections to multiple MCP servers.
 pub struct McpManager {
     clients: Arc<Mutex<HashMap<String, McpClient>>>,
+    /// Servers that could not be started, and why.
+    ///
+    /// Kept rather than only logged: a server that failed to spawn and one
+    /// that started but exposed no tools both leave the manager with nothing
+    /// to offer, and a caller that cannot tell them apart reports the wrong
+    /// thing. Most callers have no tracing subscriber, so a warning there is
+    /// invisible.
+    failures: Vec<(String, String)>,
 }
 
 impl McpManager {
     /// Connect to all configured MCP servers.
     pub async fn connect(configs: &[McpServerConfig]) -> Result<Self> {
         let mut clients = HashMap::new();
+        let mut failures = Vec::new();
 
         for config in configs {
             match McpClient::connect(config.clone()).await {
@@ -280,13 +289,31 @@ impl McpManager {
                 }
                 Err(e) => {
                     tracing::warn!(server = %config.name, error = %e, "Failed to connect MCP server");
+                    failures.push((config.name.clone(), e.to_string()));
                 }
             }
         }
 
         Ok(Self {
             clients: Arc::new(Mutex::new(clients)),
+            failures,
         })
+    }
+
+    /// Servers that failed to start, paired with the reason.
+    pub fn failures(&self) -> &[(String, String)] {
+        &self.failures
+    }
+
+    /// How many tools each connected server exposed.
+    pub async fn tool_counts(&self) -> Vec<(String, usize)> {
+        let clients = self.clients.lock().await;
+        let mut counts: Vec<(String, usize)> = clients
+            .iter()
+            .map(|(name, client)| (name.clone(), client.tools.len()))
+            .collect();
+        counts.sort();
+        counts
     }
 
     /// Get all discovered tool definitions across all servers.

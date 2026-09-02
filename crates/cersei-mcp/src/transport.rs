@@ -42,6 +42,24 @@ impl StdioTransport {
         let stdout = child.stdout.take()
             .ok_or_else(|| CerseiError::Mcp("Failed to get stdout".into()))?;
 
+        // Drain stderr. It is piped so it cannot scribble over the terminal,
+        // but a pipe nobody reads fills after ~64KB and then blocks the
+        // server's next write — permanently, and in a way that looks like the
+        // server simply stopped responding. MCP servers routinely log there.
+        if let Some(stderr) = child.stderr.take() {
+            tokio::spawn(async move {
+                let mut reader = BufReader::new(stderr);
+                let mut line = String::new();
+                loop {
+                    line.clear();
+                    match reader.read_line(&mut line).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(_) => tracing::debug!(target: "mcp::stderr", "{}", line.trim_end()),
+                    }
+                }
+            });
+        }
+
         // Pending requests: id → response channel
         let pending: Arc<Mutex<HashMap<u64, oneshot::Sender<serde_json::Value>>>> =
             Arc::new(Mutex::new(HashMap::new()));
