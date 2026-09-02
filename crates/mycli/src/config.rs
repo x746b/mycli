@@ -406,7 +406,12 @@ pub fn apply_cli_overrides(cli: &Cli, config: &mut Config) {
             config.provider = resolved.name;
             config.base_url = resolved.base_url;
             config.api_key = resolved.api_key;
-            if config.model.is_empty() {
+            // Only an explicit -m outranks the profile's model. Testing the
+            // field for emptiness instead of testing the flag also let the
+            // config file's top-level `model` — which names the *local* model
+            // — leak onto every cloud profile, so `--cloud deepseek` asked
+            // DeepSeek for a model only the local server has.
+            if cli.model.is_none() {
                 config.model = resolved.model;
             }
             if let Some(mt) = resolved.max_tokens {
@@ -465,6 +470,44 @@ pub fn resolve_tool_tier(config: &Config) -> &str {
                 || config.base_url.contains("localhost");
             if is_local { "medium" } else { "full" }
         }
+    }
+}
+
+#[cfg(test)]
+mod cloud_override_tests {
+    use super::*;
+    use clap::Parser;
+
+    fn config_with_local_model() -> Config {
+        let mut config = Config::default();
+        config.model = "Qwen3.6-35B-A3B-8bit".into();
+        config.cloud.insert(
+            "deepseek".into(),
+            CloudProfile {
+                api_key: "k".into(),
+                model: "deepseek-v4-flash".into(),
+                ..Default::default()
+            },
+        );
+        config
+    }
+
+    #[test]
+    fn a_cloud_profile_replaces_the_local_model() {
+        let mut config = config_with_local_model();
+        apply_cli_overrides(&Cli::parse_from(["mycli", "--cloud", "deepseek"]), &mut config);
+        assert_eq!(config.model, "deepseek-v4-flash");
+        assert_eq!(config.provider, "deepseek");
+    }
+
+    #[test]
+    fn an_explicit_model_flag_still_wins() {
+        let mut config = config_with_local_model();
+        apply_cli_overrides(
+            &Cli::parse_from(["mycli", "--cloud", "deepseek", "-m", "deepseek-v4-pro"]),
+            &mut config,
+        );
+        assert_eq!(config.model, "deepseek-v4-pro");
     }
 }
 
