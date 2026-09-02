@@ -356,7 +356,7 @@ Two lines pinned to the bottom of the terminal, outside the scroll region:
 
 ```
 /opt/mycli (main)
-↑2.8k ↓1.1k · pp 626 t/s · tg 25.9 t/s · ctx 4.2%/128k · code · think:on   (omlx) Qwen3.8-27B
+↑2.8k ↓1.1k · pp 626 t/s · tg 95.9 t/s · ctx 4.2%/128k · code · think:on   (omlx) Qwen3.8-27B
 ```
 
 - **line 1** — working directory and git branch
