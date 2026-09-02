@@ -99,39 +99,40 @@ impl Tool for FileEditTool {
             if old_string.is_empty() {
                 return ToolResult::error("old_string cannot be empty".to_string());
             }
-            // String replacement mode — try exact, then fuzzy
-            if content.contains(old_string) {
-                if input.replace_all {
-                    content.replace(old_string, &input.new_string)
-                } else {
-                    let count = content.matches(old_string).count();
-                    if count > 1 {
-                        return ToolResult::error(format!(
-                            "old_string is not unique ({} occurrences). Use replace_all or provide more context.",
-                            count
-                        ));
-                    }
-                    content.replacen(old_string, &input.new_string, 1)
+            // String replacement mode. The replacer ladder tries exact first,
+            // then progressively more tolerant strategies — weaker models drift
+            // on indentation, and a byte-exact requirement loses the edit. Every
+            // strategy only ever returns text that really exists in the file, so
+            // a fuzzy match relaxes where the text is found, never what is
+            // written. See `tool_primitives::replace`.
+            match crate::tool_primitives::replace::replace(
+                &content,
+                old_string,
+                &input.new_string,
+                input.replace_all,
+            ) {
+                Ok(updated) => updated,
+                Err(crate::tool_primitives::replace::ReplaceError::Ambiguous { count }) => {
+                    return ToolResult::error(format!(
+                        "old_string is not unique ({} occurrences). Use replace_all or provide more context.",
+                        count
+                    ));
                 }
-            } else if let Some(actual) = fuzzy_find_match(&content, old_string) {
-                if input.replace_all {
-                    content.replace(&actual, &input.new_string)
-                } else {
-                    let count = content.matches(actual.as_str()).count();
-                    if count > 1 {
-                        return ToolResult::error(format!(
-                            "old_string is not unique ({} occurrences). Use replace_all or provide more context.",
-                            count
-                        ));
-                    }
-                    content.replacen(&actual, &input.new_string, 1)
+                Err(crate::tool_primitives::replace::ReplaceError::NoChange) => {
+                    return ToolResult::error(
+                        "old_string and new_string are identical — nothing to change.".to_string(),
+                    );
                 }
-            } else {
-                let old_preview: String = old_string.chars().take(80).collect();
-                return ToolResult::error(format!(
-                    "old_string not found in {}. Tip: use start_line/end_line instead — line numbers are shown by the Read tool. Your old_string started with: {:?}",
-                    input.file_path, old_preview
-                ));
+                Err(crate::tool_primitives::replace::ReplaceError::EmptyOldString) => {
+                    return ToolResult::error("old_string cannot be empty".to_string());
+                }
+                Err(crate::tool_primitives::replace::ReplaceError::NotFound) => {
+                    let old_preview: String = old_string.chars().take(80).collect();
+                    return ToolResult::error(format!(
+                        "old_string not found in {}. Re-read the file — it may have changed. If the text appears more than once, add surrounding lines to disambiguate, or use start_line/end_line (line numbers are shown by Read). Your old_string started with: {:?}",
+                        input.file_path, old_preview
+                    ));
+                }
             }
         } else {
             return ToolResult::error(
@@ -149,70 +150,26 @@ impl Tool for FileEditTool {
     }
 }
 
-/// Try to find a fuzzy match in the file content when exact match fails.
-/// Handles common local-LLM mistakes: wrong indentation, trailing whitespace,
-/// \r\n vs \n, and minor whitespace differences.
-fn fuzzy_find_match(content: &str, old_string: &str) -> Option<String> {
-    // Strategy 1: Trim trailing whitespace from each line and compare
-    let normalize_lines = |s: &str| -> String {
-        s.lines()
-            .map(|l| l.trim_end())
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
 
-    let norm_old = normalize_lines(old_string);
-    let norm_content = normalize_lines(content);
+#[cfg(test)]
+mod tolerance_tests {
+    use crate::tool_primitives::replace::replace;
 
-    if let Some(start) = norm_content.find(&norm_old) {
-        let norm_before = &norm_content[..start];
-        let line_start = norm_before.matches('\n').count();
-        let line_count = norm_old.matches('\n').count() + 1;
-
-        let content_lines: Vec<&str> = content.lines().collect();
-        if line_start + line_count <= content_lines.len() {
-            let matched: String = content_lines[line_start..line_start + line_count].join("\n");
-            if content.contains(&matched) {
-                return Some(matched);
-            }
-        }
+    /// The failure this port exists for: a model quotes code back with the
+    /// wrong indentation, which an exact match rejects outright.
+    #[test]
+    fn an_edit_survives_indentation_drift() {
+        let file = "class S:\n    def go(self):\n        x = compute()\n        return x\n";
+        // Model wrote four spaces where the file has eight.
+        let drifted = "    x = compute()\n    return x";
+        assert!(
+            !file.contains(drifted),
+            "test is vacuous unless an exact match genuinely fails"
+        );
+        let out = replace(file, drifted, "    x = compute() * 2\n    return x", false)
+            .expect("ladder should locate the block despite the drift");
+        assert!(out.contains("compute() * 2"), "{out}");
+        // The rest of the file is untouched.
+        assert!(out.starts_with("class S:\n    def go(self):\n"), "{out}");
     }
-
-    // Strategy 2: Strip all indentation and do line-by-line comparison
-    let old_trimmed: String = old_string
-        .lines()
-        .map(|l| l.trim())
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    if old_trimmed.is_empty() {
-        return None;
-    }
-
-    let content_lines: Vec<&str> = content.lines().collect();
-    let old_lines: Vec<&str> = old_trimmed.lines().collect();
-
-    if old_lines.is_empty() {
-        return None;
-    }
-
-    for start_idx in 0..content_lines.len() {
-        if start_idx + old_lines.len() > content_lines.len() {
-            break;
-        }
-        let mut matches = true;
-        for (j, old_line) in old_lines.iter().enumerate() {
-            if content_lines[start_idx + j].trim() != *old_line {
-                matches = false;
-                break;
-            }
-        }
-        if matches {
-            let matched: String =
-                content_lines[start_idx..start_idx + old_lines.len()].join("\n");
-            return Some(matched);
-        }
-    }
-
-    None
 }

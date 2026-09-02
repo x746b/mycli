@@ -14,6 +14,7 @@ pub mod glob_tool;
 pub mod grep_tool;
 pub mod notebook_edit;
 pub mod permissions;
+pub mod tool_primitives;
 pub mod plan_mode;
 pub mod powershell;
 pub mod remote_trigger;
