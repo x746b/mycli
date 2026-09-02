@@ -502,8 +502,20 @@ fn summarize_result(
 
 /// Print the logo. Emitted before the agent is constructed so that provider,
 /// MCP, and tool-tier lines appear underneath it rather than above.
+/// Spaces between the logo's descender line and the version. The descender
+/// leaves the right half of that line empty, which is where the version goes —
+/// flush with the logo's own right edge, so it reads as part of the block
+/// rather than a line tacked underneath. At least one space always separates
+/// them, however long the version string grows.
+fn version_pad(logo: &str, last_line: &str, version: &str) -> usize {
+    let width = logo.lines().map(|l| l.chars().count()).max().unwrap_or(0);
+    width
+        .saturating_sub(last_line.chars().count() + version.chars().count())
+        .max(1)
+}
+
 pub fn logo() {
-    let logo = r#"                   _____ _     __
+    const LOGO: &str = r#"                   _____ _     __
                   / ____| |   /_ |
   _ __ ___  _   _| |    | |    | |
  | '_ ` _ \| | | | |    | |    | |
@@ -512,7 +524,18 @@ pub fn logo() {
              __/ |
             |___/"#;
 
-    let _ = write!(io::stderr(), "\n{ACCENT}{BOLD}{logo}{RESET}\n\n");
+    let version = format!("v{}", env!("CARGO_PKG_VERSION"));
+    let mut lines: Vec<String> = LOGO.lines().map(str::to_string).collect();
+    if let Some(last) = lines.pop() {
+        let pad = " ".repeat(version_pad(LOGO, &last, &version));
+        lines.push(format!("{last}{pad}{RESET}{DIM}{version}"));
+    }
+
+    let _ = write!(
+        io::stderr(),
+        "\n{ACCENT}{BOLD}{}{RESET}\n\n",
+        lines.join("\n")
+    );
     let _ = io::stderr().flush();
 }
 
@@ -606,6 +629,20 @@ mod tests {
         // Observations belong to a model, not to the session.
         forget_model_observations();
         assert_eq!(model_reasons(), None);
+    }
+
+    /// The version sits flush with the logo's right edge, and never runs into
+    /// the ASCII art no matter how long the version string gets.
+    #[test]
+    fn version_sits_flush_with_the_logo_edge() {
+        let logo = "  aaaaaaaaaaaaaaaaaa\n bbbb";
+        let width = 20;
+
+        let pad = version_pad(logo, " bbbb", "v1.0.0");
+        assert_eq!(" bbbb".len() + pad + "v1.0.0".len(), width, "right edges differ");
+
+        // A version too long to fit still keeps a separating space.
+        assert_eq!(version_pad(logo, " bbbb", "v100.200.300-rc1"), 1);
     }
 
     #[test]
