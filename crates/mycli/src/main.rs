@@ -54,7 +54,7 @@ pub struct Cli {
     #[arg(long, short = 'y')]
     pub yes: bool,
 
-    /// Start with the model's reasoning hidden (toggle later with Ctrl+O)
+    /// Start with reasoning off — at the model level where the server supports it
     #[arg(long)]
     pub no_thinking: bool,
 
