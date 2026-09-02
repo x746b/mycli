@@ -306,6 +306,16 @@ impl Provider for OpenAi {
             }
         }
 
+        // Model-level reasoning switch. Servers that render a chat template
+        // locally — oMLX, vLLM, SGLang — expose the template's own thinking
+        // flag through `chat_template_kwargs`; that is what actually stops a
+        // Qwen-style model from reasoning, as opposed to hiding the output.
+        // Only sent when a caller asked for it explicitly, since a hosted API
+        // that does not know the field will reject the request.
+        if request.options.get::<bool>("thinking") == Some(false) {
+            body["chat_template_kwargs"] = serde_json::json!({ "enable_thinking": false });
+        }
+
         // Tool use and reasoning are mutually exclusive on chat/completions for
         // the gpt-5 family, so trade reasoning away to keep tools working.
         if !request.tools.is_empty() && needs_reasoning_effort_none(&model) {

@@ -73,6 +73,10 @@ pub struct Agent {
     max_tokens: u32,
     temperature: Option<f32>,
     thinking_budget: Option<u32>,
+    /// Model-level reasoning switch. `None` leaves it to the model's default;
+    /// `Some(false)` asks the provider to turn reasoning off outright, which is
+    /// different from merely not displaying it.
+    thinking_enabled: Option<bool>,
     working_dir: PathBuf,
     permission_policy: Arc<dyn PermissionPolicy>,
     memory: Option<Arc<dyn Memory>>,
@@ -166,6 +170,16 @@ impl Agent {
         self.cancel_token = token;
     }
 
+    /// Switch model-level reasoning at runtime, so a REPL can toggle it between
+    /// turns without rebuilding the agent.
+    pub fn set_thinking_enabled(&mut self, on: bool) {
+        self.thinking_enabled = Some(on);
+    }
+
+    pub fn thinking_enabled(&self) -> Option<bool> {
+        self.thinking_enabled
+    }
+
     /// Subscribe to the broadcast channel (requires enable_broadcast on builder).
     pub fn subscribe(&self) -> Option<broadcast::Receiver<AgentEvent>> {
         self.broadcast_tx.as_ref().map(|tx| tx.subscribe())
@@ -213,6 +227,7 @@ pub struct AgentBuilder {
     max_tokens: u32,
     temperature: Option<f32>,
     thinking_budget: Option<u32>,
+    thinking_enabled: Option<bool>,
     working_dir: Option<PathBuf>,
     permission_policy: Option<Arc<dyn PermissionPolicy>>,
     memory: Option<Arc<dyn Memory>>,
@@ -242,6 +257,7 @@ impl Default for AgentBuilder {
             max_tokens: 16384,
             temperature: None,
             thinking_budget: None,
+            thinking_enabled: None,
             working_dir: None,
             permission_policy: None,
             memory: None,
@@ -304,6 +320,12 @@ impl AgentBuilder {
 
     pub fn temperature(mut self, t: f32) -> Self {
         self.temperature = Some(t);
+        self
+    }
+
+    /// Turn model-level reasoning on or off, where the provider supports it.
+    pub fn thinking(mut self, on: bool) -> Self {
+        self.thinking_enabled = Some(on);
         self
     }
 
@@ -422,6 +444,7 @@ impl AgentBuilder {
             max_tokens: self.max_tokens,
             temperature: self.temperature,
             thinking_budget: self.thinking_budget,
+            thinking_enabled: self.thinking_enabled,
             working_dir,
             permission_policy: self
                 .permission_policy

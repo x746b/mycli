@@ -219,6 +219,9 @@ pub async fn run_agent_streaming(
         if let Some(budget) = agent.thinking_budget {
             options.set("thinking_budget", budget);
         }
+        if let Some(on) = agent.thinking_enabled {
+            options.set("thinking", on);
+        }
 
         let request = CompletionRequest {
             model: model.clone(),

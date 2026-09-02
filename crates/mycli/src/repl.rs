@@ -910,6 +910,13 @@ async fn build_agent(config: &Config, cancel_token: CancellationToken) -> anyhow
         builder = builder.context_window(tokens);
     }
 
+    // Starting with thinking off means off at the model level too, where the
+    // provider can do that — otherwise the model still pays to reason and the
+    // output is merely discarded.
+    if !config.show_thinking && is_local_provider(config) {
+        builder = builder.thinking(false);
+    }
+
     if config.auto_approve {
         builder = builder.permission_policy(AutoApprove);
     } else {
@@ -1520,20 +1527,50 @@ fn handle_command(cmd: &str, args: &str, config: &Config, current_model: &str) -
 /// `last` exists because reasoning that already streamed in collapsed form
 /// cannot be un-collapsed in place — the renderer keeps the text so it can be
 /// reprinted on demand.
-fn apply_thinking_command(arg: &str, renderer: &mut Renderer) {
+/// `/thinking` controls whether the model reasons at all; ctrl+o only controls
+/// whether the reasoning that arrives is drawn. Turning it off at the model
+/// level is what actually saves the tokens and the latency, so that is what the
+/// command does — hiding the gutter follows as a consequence, not as the point.
+///
+/// The switch reaches the model through the chat template, which only a server
+/// that renders one locally exposes. Against a hosted API there is nothing to
+/// send, so the command says so rather than silently doing half the job.
+fn apply_thinking_command(
+    arg: &str,
+    renderer: &mut Renderer,
+    agent: &mut Agent,
+    config: &Config,
+) {
+    let model_level = is_local_provider(config);
+
+    let mut set = |on: bool, renderer: &mut Renderer| {
+        render::set_thinking_visible(on);
+        if model_level {
+            agent.set_thinking_enabled(on);
+            renderer.notice(&format!(
+                "reasoning {} \x1b[90m(model level)\x1b[0m",
+                if on { "on" } else { "off" }
+            ));
+        } else {
+            renderer.notice(&format!(
+                "reasoning {} \x1b[90m(display only — on {} reasoning is set by model choice)\x1b[0m",
+                if on { "on" } else { "off" },
+                config.provider
+            ));
+        }
+    };
+
     match arg {
         "last" | "show" => {
             if !renderer.replay_last_thinking() {
                 renderer.notice("no reasoning captured yet");
             }
         }
-        "on" | "off" => {
-            render::set_thinking_visible(arg == "on");
-            renderer.notice(&format!("reasoning {arg}"));
-        }
+        "on" => set(true, renderer),
+        "off" => set(false, renderer),
         "" => {
-            let on = render::toggle_thinking();
-            renderer.notice(&format!("reasoning {}", if on { "on" } else { "off" }));
+            let on = !render::thinking_visible();
+            set(on, renderer);
         }
         other => renderer.notice(&format!("unknown option '{other}' — use on, off, or last")),
     }
@@ -1737,7 +1774,9 @@ pub async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                     config.persona = persona;
                     rebuild_agent(&mut agent, &mut current_model, &config, &mut is_first, &mut renderer).await;
                 }
-                CommandResult::Thinking(arg) => apply_thinking_command(&arg, &mut renderer),
+                CommandResult::Thinking(arg) => {
+                    apply_thinking_command(&arg, &mut renderer, &mut agent, &config)
+                }
                 CommandResult::Continue => {}
             }
             status::set_context(&current_model, &config.provider, &config.persona, &config.working_dir, agent.context_window());
