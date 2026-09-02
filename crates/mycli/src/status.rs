@@ -387,6 +387,11 @@ mod tests {
         assert_eq!(rate(50, Duration::from_secs(2)), Some(25.0));
     }
 
+    /// These tests drive the process-wide footer state, so they cannot run
+    /// beside each other. Without this they interleave and read each other's
+    /// tokens — which passed or failed depending on thread scheduling.
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
+
     fn rates() -> (Option<f64>, Option<f64>) {
         let s = STATE.lock();
         (rate(s.pp_tokens, s.pp_time), rate(s.tg_tokens, s.tg_time))
@@ -408,6 +413,7 @@ mod tests {
     /// high.
     #[test]
     fn only_prompt_growth_counts_when_the_cache_is_unreported() {
+        let _guard = TEST_LOCK.lock();
         reset_tokens();
         let second = Duration::from_secs(1);
 
@@ -428,6 +434,7 @@ mod tests {
     /// growth guess.
     #[test]
     fn a_reported_cache_count_is_used_verbatim() {
+        let _guard = TEST_LOCK.lock();
         reset_tokens();
         let second = Duration::from_secs(1);
         let cached = |n: u64| serde_json::json!({"prompt_tokens_details": {"cached_tokens": n}});
@@ -446,6 +453,7 @@ mod tests {
     /// reproduces the figure the server itself reports.
     #[test]
     fn a_provider_clock_counts_the_whole_prompt() {
+        let _guard = TEST_LOCK.lock();
         reset_tokens();
         record_turn(
             &usage(
@@ -489,6 +497,7 @@ mod tests {
     /// timed it — and either way it must advance the prompt-size chain.
     #[test]
     fn an_unmeasurable_turn_still_advances_the_chain() {
+        let _guard = TEST_LOCK.lock();
         reset_tokens();
         let second = Duration::from_secs(1);
         record_turn(&usage(1000, 10, NONE), Some((second, second)));
@@ -502,6 +511,7 @@ mod tests {
     /// A compacted context is not a shared prefix any more.
     #[test]
     fn a_shrinking_prompt_counts_in_full_again() {
+        let _guard = TEST_LOCK.lock();
         reset_tokens();
         let second = Duration::from_secs(1);
         record_turn(&usage(1000, 1, NONE), Some((second, second)));
