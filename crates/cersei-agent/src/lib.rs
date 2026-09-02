@@ -90,9 +90,16 @@ pub struct Agent {
     messages: Arc<parking_lot::Mutex<Vec<Message>>>,
     cumulative_usage: Arc<parking_lot::Mutex<Usage>>,
     cancel_token: tokio_util::sync::CancellationToken,
+    pub(crate) context_window: u64,
 }
 
 impl Agent {
+    /// Tokens this model can hold, as stated by the provider when it says and
+    /// guessed from the model name otherwise.
+    pub fn context_window(&self) -> u64 {
+        self.context_window
+    }
+
     pub fn builder() -> AgentBuilder {
         AgentBuilder::default()
     }
@@ -217,6 +224,7 @@ pub struct AgentBuilder {
     reporters: Vec<Arc<dyn Reporter>>,
     event_filter: Option<Box<dyn Fn(&AgentEvent) -> bool + Send + Sync>>,
     cancel_token: Option<tokio_util::sync::CancellationToken>,
+    context_window: Option<u64>,
     auto_compact: bool,
     compact_threshold: f64,
     tool_result_budget: usize,
@@ -245,6 +253,7 @@ impl Default for AgentBuilder {
             reporters: Vec::new(),
             event_filter: None,
             cancel_token: None,
+            context_window: None,
             auto_compact: true,
             compact_threshold: 0.9,
             tool_result_budget: 50_000,
@@ -356,6 +365,14 @@ impl AgentBuilder {
         self
     }
 
+    /// Tokens this model can hold. Providers that publish the figure — a local
+    /// server reporting `max_model_len`, say — should pass it: guessing from
+    /// the model name is only ever approximate, and wrong by 8x is easy.
+    pub fn context_window(mut self, tokens: u64) -> Self {
+        self.context_window = Some(tokens);
+        self
+    }
+
     pub fn cancel_token(mut self, token: tokio_util::sync::CancellationToken) -> Self {
         self.cancel_token = Some(token);
         self
@@ -390,6 +407,11 @@ impl AgentBuilder {
             tx
         });
 
+        // Resolved before the struct literal moves `self.model`.
+        let context_window = self.context_window.unwrap_or_else(|| {
+            crate::compact::context_window_for_model(self.model.as_deref().unwrap_or(""))
+        });
+
         Ok(Agent {
             provider,
             tools: self.tools,
@@ -421,6 +443,7 @@ impl AgentBuilder {
             cancel_token: self
                 .cancel_token
                 .unwrap_or_else(tokio_util::sync::CancellationToken::new),
+            context_window,
         })
     }
 

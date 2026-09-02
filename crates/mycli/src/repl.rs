@@ -452,6 +452,38 @@ fn list_omlx_models(base_url: &str, api_key: &str) -> Vec<String> {
     off_runtime(|| list_omlx_models_blocking(base_url, api_key))
 }
 
+/// Context window a local server advertises for `model`, if it does.
+///
+/// oMLX returns `max_model_len` from `/v1/models`. Guessing the window from
+/// the model name is only ever approximate — a 256k model named
+/// `Qwen3.6-35B-A3B-8bit` falls through to a 32k default, an eight-fold
+/// under-estimate that shows a full context bar and compacts far too early.
+fn omlx_context_window(base_url: &str, api_key: &str, model: &str) -> Option<u64> {
+    off_runtime(|| {
+        fetch_models(base_url, api_key)?
+            .iter()
+            .find(|m| m.get("id").and_then(|v| v.as_str()) == Some(model))
+            .and_then(|m| m.get("max_model_len"))
+            .and_then(|v| v.as_u64())
+            .filter(|len| *len > 0)
+    })
+}
+
+/// The `data` array from `/v1/models`, or `None` when it cannot be read.
+fn fetch_models(base_url: &str, api_key: &str) -> Option<Vec<serde_json::Value>> {
+    let url = format!("{}/models", base_url);
+    let client = reqwest::blocking::Client::new();
+    let resp = client
+        .get(&url)
+        .header("authorization", format!("Bearer {}", api_key))
+        .timeout(std::time::Duration::from_secs(5))
+        .send()
+        .ok()
+        .filter(|r| r.status().is_success())?;
+    let json: serde_json::Value = resp.json().ok()?;
+    json.get("data")?.as_array().cloned()
+}
+
 fn list_omlx_models_blocking(base_url: &str, api_key: &str) -> Vec<String> {
     let url = format!("{}/models", base_url);
     let client = reqwest::blocking::Client::new();
@@ -760,6 +792,18 @@ fn build_tools(tier: &str, working_dir: &std::path::Path) -> Vec<Box<dyn cersei_
 
 async fn build_agent(config: &Config, cancel_token: CancellationToken) -> anyhow::Result<(Agent, String)> {
     let (provider, resolved_model) = build_provider(config)?;
+
+    // Prefer a window the server states over one guessed from the model name.
+    let is_local = config.provider == "omlx"
+        || config.base_url.contains("127.0.0.1")
+        || config.base_url.contains("localhost");
+    let api_key = if config.api_key.is_empty() { "mycli" } else { &config.api_key };
+    let context_window = if is_local {
+        omlx_context_window(&config.base_url, api_key, &resolved_model)
+    } else {
+        None
+    };
+
     let system_prompt = build_system_prompt(config);
     let tier = config::resolve_tool_tier(config);
     let mut tools = build_tools(tier, &config.working_dir);
@@ -832,6 +876,10 @@ async fn build_agent(config: &Config, cancel_token: CancellationToken) -> anyhow
         .cancel_token(cancel_token)
         .working_dir(&config.working_dir)
         .model(&resolved_model);
+
+    if let Some(tokens) = context_window {
+        builder = builder.context_window(tokens);
+    }
 
     if config.auto_approve {
         builder = builder.permission_policy(AutoApprove);
@@ -971,6 +1019,16 @@ async fn run_prompt(
                 };
                 status::record_turn(&usage, timing);
                 request_at = None;
+            }
+            // Compaction rewrites the conversation and costs a model call, so
+            // it is announced rather than done silently.
+            AgentEvent::CompactStart { messages_before, .. } => {
+                renderer.notice(&format!("context full — compacting {messages_before} messages"));
+            }
+            AgentEvent::CompactEnd { messages_after, tokens_freed } => {
+                renderer.notice(&format!(
+                    "compacted to {messages_after} messages (~{tokens_freed} tokens freed)"
+                ));
             }
             AgentEvent::ToolStart { name, input, .. } => renderer.tool_start(&name, &input),
             AgentEvent::ToolEnd {
@@ -1554,7 +1612,7 @@ pub async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
     let mut is_first = true;
 
     status::setup();
-    status::set_context(&current_model, &config.provider, &config.persona, &config.working_dir);
+    status::set_context(&current_model, &config.provider, &config.persona, &config.working_dir, agent.context_window());
     status::draw();
 
     loop {
@@ -1641,7 +1699,7 @@ pub async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                 CommandResult::Thinking(arg) => apply_thinking_command(&arg, &mut renderer),
                 CommandResult::Continue => {}
             }
-            status::set_context(&current_model, &config.provider, &config.persona, &config.working_dir);
+            status::set_context(&current_model, &config.provider, &config.persona, &config.working_dir, agent.context_window());
             status::draw();
             continue;
         }
@@ -1653,7 +1711,7 @@ pub async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
             Ok(_) => {
                 is_first = false;
                 let u = agent.usage();
-                status::set_context(&current_model, &config.provider, &config.persona, &config.working_dir);
+                status::set_context(&current_model, &config.provider, &config.persona, &config.working_dir, agent.context_window());
                 status::update_usage(&u);
             }
             Err(e) => renderer.error(&e.to_string()),

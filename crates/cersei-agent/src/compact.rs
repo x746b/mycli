@@ -69,6 +69,9 @@ pub struct CompactResult {
     pub messages_after: usize,
     pub tokens_freed_estimate: u64,
     pub summary: String,
+    /// The conversation to continue with: the summary, then the messages that
+    /// were kept. Empty when nothing was compacted.
+    pub messages: Vec<Message>,
 }
 
 /// What triggered the compaction.
@@ -91,9 +94,16 @@ pub fn estimate_messages_tokens(messages: &[Message]) -> u64 {
     messages.iter().map(|m| estimate_tokens(&m.get_all_text())).sum()
 }
 
-/// Get context window size for a model.
+/// Guess a context window from the model name.
+///
+/// A last resort: model ids arrive in whatever case the provider uses —
+/// `Qwen3.6-35B-A3B-8bit` from a local server, `gpt-4o` from OpenAI — so the
+/// comparison is case-insensitive. Matching case-sensitively silently dropped
+/// every capitalised name to the default. Prefer a window the provider states:
+/// see `AgentBuilder::context_window`.
 pub fn context_window_for_model(model: &str) -> u64 {
-    match model {
+    let model = model.to_ascii_lowercase();
+    match model.as_str() {
         // Anthropic
         m if m.contains("opus") => 200_000,
         m if m.contains("sonnet") => 200_000,
@@ -337,10 +347,21 @@ pub async fn compact_conversation(
             messages_after: messages_before,
             tokens_freed_estimate: 0,
             summary: String::new(),
+            messages: Vec::new(),
         });
     }
 
-    let split_idx = messages.len() - keep_recent;
+    let Some(split_idx) = safe_split_point(messages, messages.len() - keep_recent) else {
+        // Every candidate boundary would orphan a tool result. Leaving the
+        // conversation alone is better than sending one a provider rejects.
+        return Ok(CompactResult {
+            messages_before,
+            messages_after: messages_before,
+            tokens_freed_estimate: 0,
+            summary: String::new(),
+            messages: Vec::new(),
+        });
+    };
     let old_messages = &messages[..split_idx];
     let recent_messages = &messages[split_idx..];
 
@@ -381,15 +402,36 @@ pub async fn compact_conversation(
 
     let tokens_freed = estimate_messages_tokens(old_messages);
 
-    // Build compacted messages: summary + recent
-    let messages_after = 1 + recent_messages.len(); // summary message + recent
+    let mut compacted = Vec::with_capacity(1 + recent_messages.len());
+    compacted.push(Message::user(formatted_summary.clone()));
+    compacted.extend_from_slice(recent_messages);
 
     Ok(CompactResult {
         messages_before,
-        messages_after,
+        messages_after: compacted.len(),
         tokens_freed_estimate: tokens_freed,
         summary: formatted_summary,
+        messages: compacted,
     })
+}
+
+/// First index at or after `from` that is safe to resume a conversation at.
+///
+/// A plain tail split can cut a tool round in half, leaving a `tool_result`
+/// whose `tool_use` has just been summarised away — providers reject that
+/// outright. Only a user message carrying no tool results is a clean start.
+/// Returns `None` when no such boundary exists, which means this conversation
+/// cannot be compacted safely right now.
+fn safe_split_point(messages: &[Message], from: usize) -> Option<usize> {
+    (from..messages.len()).find(|&i| is_clean_boundary(&messages[i]))
+}
+
+fn is_clean_boundary(message: &Message) -> bool {
+    message.role == Role::User
+        && !message
+            .content_blocks()
+            .iter()
+            .any(|b| matches!(b, ContentBlock::ToolResult { .. }))
 }
 
 /// Check and run auto-compact if needed. Returns None if no compaction needed.
@@ -398,14 +440,17 @@ pub async fn auto_compact_if_needed(
     messages: &[Message],
     model: &str,
     tokens_used: u64,
+    context_limit: u64,
     state: &mut AutoCompactState,
 ) -> Option<CompactResult> {
-    let context_limit = context_window_for_model(model);
     if !should_auto_compact(tokens_used, context_limit, state) {
         return None;
     }
 
     match compact_conversation(provider, messages, model, KEEP_RECENT_MESSAGES, None).await {
+        // A run that could not find a safe boundary changed nothing; treat it
+        // as "not needed" rather than a success, so the next turn tries again.
+        Ok(result) if result.messages.is_empty() => None,
         Ok(result) => {
             state.on_success();
             Some(result)
@@ -526,6 +571,11 @@ mod tests {
         assert_eq!(context_window_for_model("claude-sonnet-4-6"), 200_000);
         assert_eq!(context_window_for_model("gpt-4o"), 128_000);
         assert_eq!(context_window_for_model("gpt-4"), 8_192);
+        // Local servers name models however they like; a capitalised id used
+        // to miss every arm and fall through to the default.
+        assert_eq!(context_window_for_model("Qwen3.6-35B-A3B-8bit"), 32_768);
+        assert_eq!(context_window_for_model("Llama-3.3-70B"), 8_192);
+        assert_eq!(context_window_for_model("GPT-4o-mini"), 128_000);
     }
 
     #[test]
@@ -555,5 +605,152 @@ mod tests {
         let messages = make_messages(3);
         let idx = calculate_messages_to_keep_index(&messages, 100_000);
         assert_eq!(idx, 0); // keep all
+    }
+}
+
+#[cfg(test)]
+mod autocompact_tests {
+    use super::*;
+    use async_trait::async_trait;
+    use cersei_provider::{
+        CompletionRequest, CompletionStream, Provider, ProviderCapabilities,
+    };
+    use tokio::sync::mpsc;
+
+    /// Returns a fixed summary, so a compaction round-trip can be exercised
+    /// without a model.
+    struct SummarizerProvider;
+
+    #[async_trait]
+    impl Provider for SummarizerProvider {
+        fn name(&self) -> &str {
+            "summarizer"
+        }
+        fn context_window(&self, _: &str) -> u64 {
+            4096
+        }
+        fn capabilities(&self, _: &str) -> ProviderCapabilities {
+            ProviderCapabilities { streaming: true, ..Default::default() }
+        }
+        async fn complete(&self, _req: CompletionRequest) -> Result<CompletionStream> {
+            let (tx, rx) = mpsc::channel(16);
+            tokio::spawn(async move {
+                let _ = tx.send(StreamEvent::MessageStart { id: "1".into(), model: "s".into() }).await;
+                let _ = tx.send(StreamEvent::ContentBlockStart {
+                    index: 0, block_type: "text".into(), id: None, name: None,
+                }).await;
+                let _ = tx.send(StreamEvent::TextDelta {
+                    index: 0, text: "earlier work summarised".into(),
+                }).await;
+                let _ = tx.send(StreamEvent::ContentBlockStop { index: 0 }).await;
+                let _ = tx.send(StreamEvent::MessageDelta {
+                    stop_reason: Some(StopReason::EndTurn),
+                    usage: Some(Usage { input_tokens: 10, output_tokens: 5, ..Default::default() }),
+                }).await;
+                let _ = tx.send(StreamEvent::MessageStop).await;
+            });
+            Ok(CompletionStream::new(rx))
+        }
+    }
+
+    fn plain_conversation(pairs: usize) -> Vec<Message> {
+        let mut messages = Vec::new();
+        for i in 0..pairs {
+            messages.push(Message::user(format!("question {i}")));
+            messages.push(Message::assistant(format!("answer {i}")));
+        }
+        messages
+    }
+
+    #[tokio::test]
+    async fn compaction_replaces_the_old_turns_with_a_summary() {
+        let messages = plain_conversation(20);
+        let result = compact_conversation(&SummarizerProvider, &messages, "m", 10, None)
+            .await
+            .unwrap();
+
+        assert_eq!(result.messages_before, 40);
+        assert!(result.messages.len() < messages.len(), "{:?}", result.messages.len());
+        assert_eq!(result.messages_after, result.messages.len());
+        // The summary leads, and the tail is preserved verbatim.
+        assert!(result.messages[0].get_all_text().contains("earlier work summarised"));
+        assert_eq!(
+            result.messages.last().unwrap().get_all_text(),
+            messages.last().unwrap().get_all_text()
+        );
+    }
+
+    /// The kept tail must not begin with a tool result whose tool call was
+    /// just summarised away — providers reject that outright.
+    #[tokio::test]
+    async fn compaction_never_orphans_a_tool_result() {
+        const KEEP: usize = 10;
+
+        // Built so the naive boundary (len - KEEP) lands exactly on the tool
+        // result, which is the case the safe split point exists to handle.
+        let mut messages = plain_conversation(8); // 16, indices 0..15
+        messages.push(Message::assistant_blocks(vec![ContentBlock::ToolUse {
+            id: "call_1".into(),
+            name: "Bash".into(),
+            input: serde_json::json!({"command": "ls"}),
+        }])); // 16
+        messages.push(Message::user_blocks(vec![ContentBlock::ToolResult {
+            tool_use_id: "call_1".into(),
+            content: ToolResultContent::Text("out".into()),
+            is_error: None,
+        }])); // 17
+        messages.extend(plain_conversation(4)); // 18..25
+        messages.push(Message::user("last")); // 26
+
+        let naive = messages.len() - KEEP;
+        assert_eq!(naive, 17, "test no longer exercises the boundary it targets");
+        assert!(
+            !is_clean_boundary(&messages[naive]),
+            "naive split must be the unsafe one for this test to mean anything"
+        );
+
+        let result = compact_conversation(&SummarizerProvider, &messages, "m", KEEP, None)
+            .await
+            .unwrap();
+
+        for message in result.messages.iter().skip(1) {
+            for block in message.content_blocks() {
+                if let ContentBlock::ToolResult { tool_use_id, .. } = &block {
+                    let call_kept = result.messages.iter().any(|m| {
+                        m.content_blocks().iter().any(|b| {
+                            matches!(b, ContentBlock::ToolUse { id, .. } if id == tool_use_id)
+                        })
+                    });
+                    assert!(call_kept, "orphaned tool_result {tool_use_id}");
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn auto_compact_respects_the_threshold_and_the_limit_it_is_given() {
+        let messages = plain_conversation(20);
+        let mut state = AutoCompactState::default();
+
+        // Half full: nothing to do.
+        assert!(auto_compact_if_needed(
+            &SummarizerProvider, &messages, "m", 50_000, 100_000, &mut state
+        ).await.is_none());
+
+        // The same token count against a window eight times smaller — the
+        // difference between a stated window and one guessed from the name.
+        assert!(auto_compact_if_needed(
+            &SummarizerProvider, &messages, "m", 50_000, 12_500, &mut state
+        ).await.is_some());
+        assert_eq!(state.compaction_count, 1);
+    }
+
+    #[tokio::test]
+    async fn a_disabled_breaker_stops_compaction() {
+        let messages = plain_conversation(20);
+        let mut state = AutoCompactState { disabled: true, ..Default::default() };
+        assert!(auto_compact_if_needed(
+            &SummarizerProvider, &messages, "m", 99_000, 100_000, &mut state
+        ).await.is_none());
     }
 }

@@ -28,6 +28,9 @@ struct State {
     persona: String,
     cwd: String,
     branch: String,
+    /// Tokens the model can hold, as resolved by the agent — the provider's
+    /// figure when it states one, a guess from the model name otherwise.
+    context_window: u64,
     total_in: u64,
     total_out: u64,
     last_in: u64,
@@ -51,6 +54,7 @@ impl State {
             persona: String::new(),
             cwd: String::new(),
             branch: String::new(),
+            context_window: 0,
             total_in: 0,
             total_out: 0,
             last_in: 0,
@@ -143,9 +147,16 @@ pub fn teardown() {
 
 /// Update the session context. Re-reads the git branch, so call it when the
 /// working directory or the session configuration changes, not per token.
-pub fn set_context(model: &str, provider: &str, persona: &str, cwd: &Path) {
+pub fn set_context(
+    model: &str,
+    provider: &str,
+    persona: &str,
+    cwd: &Path,
+    context_window: u64,
+) {
     let branch = git_branch(cwd);
     let mut state = STATE.lock();
+    state.context_window = context_window;
     state.model = model.to_string();
     state.provider = provider.to_string();
     state.persona = persona.to_string();
@@ -303,7 +314,7 @@ pub fn draw() {
     }
 
     // Line 2: token flow and context on the left, model on the right.
-    let ctx_window = cersei_agent::compact::context_window_for_model(&state.model);
+    let ctx_window = state.context_window;
     let ctx = if ctx_window > 0 && state.last_in > 0 {
         let pct = (state.last_in as f64 / ctx_window as f64 * 100.0).min(100.0);
         let color = if pct >= 80.0 {

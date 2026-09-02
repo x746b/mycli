@@ -137,6 +137,10 @@ pub async fn run_agent_streaming(
     let mut turn: u32 = 0;
     let mut last_stop_reason = StopReason::EndTurn;
     let mut _last_usage = Usage::default();
+    // Prompt size the provider reported for the previous turn, and the
+    // circuit breaker that stops retrying compaction that keeps failing.
+    let mut last_input_tokens: u64 = 0;
+    let mut compact_state = crate::compact::AutoCompactState::default();
 
     // Build tool context
     let tool_ctx = ToolContext {
@@ -165,6 +169,42 @@ pub async fn run_agent_streaming(
 
         let _ = event_tx.send(AgentEvent::TurnStart { turn }).await;
         agent.emit(AgentEvent::TurnStart { turn });
+
+        // Compact before building the request, while there is still room to
+        // send one. `last_input_tokens` is the provider's own count for the
+        // previous turn — the conversation has only grown since, so it is the
+        // best estimate available; before the first turn there is nothing to
+        // compact anyway.
+        if agent.auto_compact && last_input_tokens > 0 {
+            let current = agent.messages.lock().clone();
+            let before = current.len();
+            if let Some(result) = crate::compact::auto_compact_if_needed(
+                agent.provider.as_ref(),
+                &current,
+                &agent.model.clone().unwrap_or_default(),
+                last_input_tokens,
+                agent.context_window,
+                &mut compact_state,
+            )
+            .await
+            {
+                let _ = event_tx
+                    .send(AgentEvent::CompactStart {
+                        reason: crate::events::CompactReason::ThresholdExceeded,
+                        messages_before: before,
+                    })
+                    .await;
+                *agent.messages.lock() = result.messages;
+                let _ = event_tx
+                    .send(AgentEvent::CompactEnd {
+                        messages_after: result.messages_after,
+                        tokens_freed: result.tokens_freed_estimate,
+                    })
+                    .await;
+                // The prompt shrank; the old count no longer describes it.
+                last_input_tokens = 0;
+            }
+        }
 
         // Build completion request
         let messages = agent.messages.lock().clone();
@@ -241,6 +281,8 @@ pub async fn run_agent_streaming(
         let response = accumulator.into_response()?;
         last_stop_reason = response.stop_reason.clone();
         _last_usage = response.usage.clone();
+
+        last_input_tokens = response.usage.input_tokens;
 
         // Update cumulative usage
         agent.cumulative_usage.lock().merge(&response.usage);

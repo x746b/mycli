@@ -361,6 +361,22 @@ Two lines pinned to the bottom of the terminal, outside the scroll region:
 - **think** — whether reasoning is being displayed
 - Token counters reset on model/provider switch
 
+### Context Window
+
+The window comes from the provider when it states one — oMLX reports
+`max_model_len` on `/v1/models` — and is guessed from the model name only as a
+fallback. The guess is coarse: a 256k model named `Qwen3.6-35B-A3B-8bit` would
+otherwise fall through to a 32k default, an eight-fold under-estimate that
+shows a full context bar and compacts far too early.
+
+At 90% of the window the conversation is compacted: older turns are summarised
+by the model and replaced with that summary, keeping the ten most recent
+messages. The split never cuts a tool round in half — a `tool_result` whose
+`tool_use` had just been summarised away would be rejected by the provider — so
+the boundary moves to the next plain user message, and compaction is skipped
+entirely if there isn't one. Three consecutive failures disable it for the
+session. Both the start and the result are printed.
+
 ### Throughput
 
 `pp` (prompt processing / prefill) and `tg` (token generation / decode) are
@@ -433,6 +449,22 @@ Two lines pinned to the bottom of the terminal, outside the scroll region:
 - **ctx** — context window fill from the last turn's input tokens (green/yellow/red)
 - **think** — whether reasoning is being displayed
 - Token counters reset on model/provider switch
+
+### Context Window
+
+The window comes from the provider when it states one — oMLX reports
+`max_model_len` on `/v1/models` — and is guessed from the model name only as a
+fallback. The guess is coarse: a 256k model named `Qwen3.6-35B-A3B-8bit` would
+otherwise fall through to a 32k default, an eight-fold under-estimate that
+shows a full context bar and compacts far too early.
+
+At 90% of the window the conversation is compacted: older turns are summarised
+by the model and replaced with that summary, keeping the ten most recent
+messages. The split never cuts a tool round in half — a `tool_result` whose
+`tool_use` had just been summarised away would be rejected by the provider — so
+the boundary moves to the next plain user message, and compaction is skipped
+entirely if there isn't one. Three consecutive failures disable it for the
+session. Both the start and the result are printed.
 
 ### Throughput
 
