@@ -372,8 +372,9 @@ The window is taken from the first of these that answers:
    does not carry the figure.
 3. A guess from the model name.
 
-The built-in table knows the current Claude and GPT families (Opus 5 and the
-4.6 generation onward hold 1M, GPT-5 holds 400k, older Claude 200k). The guess
+The built-in table carries figures verified against each provider: Opus 5 and
+the Claude 4.6 generation onward 1M, GPT-5.6 1,050,000, Kimi K3 and DeepSeek V4
+and Gemini 3.1 1,048,576, older generations lower. The guess
 is still coarse, so set it for any cloud model whose id it does not recognise — an unrecognised id falls back to 32,768, and a 400k model
 treated as 32k shows a full context bar and compacts far too early:
 
@@ -480,8 +481,9 @@ The window is taken from the first of these that answers:
    does not carry the figure.
 3. A guess from the model name.
 
-The built-in table knows the current Claude and GPT families (Opus 5 and the
-4.6 generation onward hold 1M, GPT-5 holds 400k, older Claude 200k). The guess
+The built-in table carries figures verified against each provider: Opus 5 and
+the Claude 4.6 generation onward 1M, GPT-5.6 1,050,000, Kimi K3 and DeepSeek V4
+and Gemini 3.1 1,048,576, older generations lower. The guess
 is still coarse, so set it for any cloud model whose id it does not recognise — an unrecognised id falls back to 32,768, and a 400k model
 treated as 32k shows a full context bar and compacts far too early:
 

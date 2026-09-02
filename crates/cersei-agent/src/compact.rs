@@ -117,7 +117,10 @@ pub fn context_window_for_model(model: &str) -> u64 {
         m if m.contains("opus") => 200_000,
         m if m.contains("sonnet") => 200_000,
         m if m.contains("haiku") => 200_000,
-        // OpenAI
+        // OpenAI. The 5.6 family is documented at 1,050,000; earlier 5.x is
+        // not, so it keeps a conservative floor — under-estimating only
+        // compacts sooner, over-estimating hits a hard API error.
+        m if m.contains("gpt-5.6") => 1_050_000,
         m if m.contains("gpt-5") => 400_000,
         m if m.contains("gpt-4o") => 128_000,
         m if m.contains("gpt-4-turbo") => 128_000,
@@ -125,11 +128,13 @@ pub fn context_window_for_model(model: &str) -> u64 {
         m if m.contains("gpt-3.5") => 16_385,
         m if m.contains("o1") || m.contains("o3") || m.contains("o4") => 200_000,
         // Google
-        m if m.contains("gemini") => 1_000_000,
-        // Kimi / Moonshot
-        m if m.contains("kimi") || m.contains("moonshot") => 128_000,
-        // DeepSeek
-        m if m.contains("deepseek") => 64_000,
+        m if m.contains("gemini") => 1_048_576,
+        // Kimi / Moonshot. K3 reports 1M on /v1/models; K2.x reports 256k.
+        m if m.contains("kimi-k3") => 1_048_576,
+        m if m.contains("kimi") || m.contains("moonshot") => 262_144,
+        // DeepSeek. V4 holds 1M; earlier generations 128k.
+        m if m.contains("deepseek-v4") => 1_048_576,
+        m if m.contains("deepseek") => 131_072,
         // Local / small
         m if m.contains("llama") => 8_192,
         m if m.contains("qwen") => 32_768,
@@ -593,8 +598,13 @@ mod tests {
         assert_eq!(context_window_for_model("claude-sonnet-4-6"), 1_000_000);
         assert_eq!(context_window_for_model("claude-opus-4-5"), 200_000);
         assert_eq!(context_window_for_model("claude-haiku-4-5"), 200_000);
-        assert_eq!(context_window_for_model("gpt-5.6-luna"), 400_000);
+        assert_eq!(context_window_for_model("gpt-5.6-luna"), 1_050_000);
         assert_eq!(context_window_for_model("gpt-5.5"), 400_000);
+        // Verified against the providers' own model endpoints.
+        assert_eq!(context_window_for_model("kimi-k3"), 1_048_576);
+        assert_eq!(context_window_for_model("kimi-k2.6"), 262_144);
+        assert_eq!(context_window_for_model("deepseek-v4-pro"), 1_048_576);
+        assert_eq!(context_window_for_model("gemini-3.1-pro-preview"), 1_048_576);
     }
 
     #[test]
