@@ -59,10 +59,11 @@ $ mycli
  ───────────────────────────────────────────────────────────────────────────────────────────────
  › /tools
  ───────────────────────────────────────────────────────────────────────────────────────────────
-  tools [full]: Read, Write, Bash, Edit, Glob, Grep, WebFetch, Skill, WebSearch, mcp command-vault: 19 tools, mcp cve-lookup: 8 tools
-  Switched to Jundot_Qwen3.8-Flash-Next-oQ4e-mtp (omlx)
-```
+  tools [full]: Read, Write, Bash, Edit, Glob, Grep, WebFetch, Skill, WebSearch,
+  mcp command-vault: 19 tools, mcp cve-lookup: 8 tools
 
+Switched to Jundot_Qwen3.8-Flash-Next-oQ4e-mtp (omlx)
+```
 
 
 ```bash
@@ -115,25 +116,50 @@ api_key = "your-omlx-key"
 # show_thinking = false    # start with reasoning off (see Reasoning)
 
 # ─── MCP servers ───────────────────────────────────────────
+# Tools auto-discovered on startup (full tier only)
+# Codex syntax
+
 [mcp_servers.command-vault]
-command = "/path/to/venv/bin/python"
+command = "/opt/command-vault-mcp/.venv/bin/python"
 args = ["-m", "command_vault.server"]
-env = { VAULT_DB = "/path/to/vault.db", VAULT_READONLY = "1" }
+
+[mcp_servers.command-vault.env]
+VAULT_DB = "/home/xtk/.local/share/command-vault/vault.db"
+
+[mcp_servers.cve-lookup]
+command = "/opt/cve-lookup/.venv/bin/cve-lookup"
+args = ["serve"]
+
+[mcp_servers.cve-lookup.env]
+NVD_API_KEY = "..."
 
 # ─── Cloud models ──────────────────────────────────────────
 [cloud.kimi]
 api_key = "sk-..."
 model = "kimi-k3"
+context_window = 1048576
+
+[cloud.deepseek]
+api_key = "sk-..."
+model = "deepseek-v4-pro"
+context_window = 1048576
+
+[cloud.gemini]
+api_key = "..."
+model = "gemini-3.1-pro-preview"
+context_window = 1048576
 
 [cloud.openai]
-api_key = "sk-..."
-model = "gpt-5.5"
-# admin_key = "sk-admin-..."      # /usage spend; needs api.usage.read scope
-# credits = 50.00                 # optional, credit balance
-# credits_since = "2026-08-01"    # optional, date that balance was true
+api_key = "sk-proj-...." 
+admin_key = "sk-admin-..."
+model = "gpt-6-astra"
+context_window = 1050000
+credits = 50.00                 # initial credit balance
+credits_since = "2026-08-01"    # the date that figure was true
+
 ```
 
-Same shape for `kimi-think`, `deepseek`, `deepseek-think` and `gemini`; add
+For `kimi-think`, `deepseek`, `deepseek-think` and `gemini`; add
 `max_tokens` to any profile to override. `model` and `max_tokens` override the
 built-in preset defaults — that is how you run a newer model than the preset ships with.
 
