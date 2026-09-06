@@ -22,8 +22,12 @@ impl StdioTransport {
         command: &str,
         args: &[String],
         env: &HashMap<String, String>,
+        cwd: Option<&str>,
     ) -> Result<Self> {
         let mut cmd = Command::new(command);
+        if let Some(cwd) = cwd {
+            cmd.current_dir(cwd);
+        }
         cmd.args(args)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())

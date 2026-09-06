@@ -58,6 +58,10 @@ pub struct Cli {
     #[arg(long)]
     pub no_thinking: bool,
 
+    /// Cloud model reasoning effort (default, none, low, medium, high, ...)
+    #[arg(long, value_name = "LEVEL")]
+    pub reasoning: Option<String>,
+
     /// Persona: code (default), redteam, blueteam, data
     #[arg(long, short = 'p', value_name = "PERSONA")]
     pub persona: Option<String>,

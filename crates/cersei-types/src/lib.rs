@@ -278,6 +278,7 @@ impl Usage {
         self.provider_usage
             .get("prompt_tokens_details")
             .and_then(|d| d.get("cached_tokens"))
+            .or_else(|| self.provider_usage.get("input_tokens_details").and_then(|d| d.get("cached_tokens")))
             .or_else(|| self.provider_usage.get("cache_read_input_tokens"))
             .and_then(|v| v.as_u64())
     }
@@ -401,6 +402,11 @@ pub enum StreamEvent {
     ThinkingDelta {
         index: usize,
         thinking: String,
+    },
+    /// Opaque reasoning state to replay to the provider, never displayed.
+    ThinkingSignature {
+        index: usize,
+        signature: String,
     },
     ContentBlockStop {
         index: usize,

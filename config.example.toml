@@ -15,16 +15,16 @@ api_key = "omlx-xxxxxxxxxxxxxxxxxxxx"
 
 # ─── MCP servers ───────────────────────────────────────────
 # Tools auto-discovered on startup (full tier only)
-# Add as many [[mcp]] blocks as you need
+# Codex-compatible named tables; copy command-based servers from Codex config.
 
-# [[mcp]]
-# name = "command-vault"
+# [mcp_servers.command-vault]
 # command = "/path/to/command-vault/.venv/bin/python"
 # args = ["-m", "command_vault.server"]
 # env = { VAULT_DB = "/path/to/vault.db", VAULT_READONLY = "1" }
+# enabled = true
+# cwd = "/path/to/project"
 
-# [[mcp]]
-# name = "github"
+# [mcp_servers.github]
 # command = "npx"
 # args = ["-y", "@modelcontextprotocol/server-github"]
 # env = { GITHUB_TOKEN = "ghp_xxxxxxxxxxxx" }
@@ -37,29 +37,26 @@ api_key = "omlx-xxxxxxxxxxxxxxxxxxxx"
 [cloud.kimi]
 api_key = "sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 model = "kimi-k3"
+# reasoning_effort = "max" # default | low | high | max
 # context_window = 262144   # set when the model id is not in the built-in table;
                             # NOT max_tokens, which caps a single response
-
-[cloud.kimi-think]
-api_key = "sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-model = "kimi-k3"
-max_tokens = 32768
 
 [cloud.deepseek]
 api_key = "sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 model = "deepseek-chat"
-
-[cloud.deepseek-think]
-api_key = "sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-model = "deepseek-reasoner"
+# reasoning_effort = "high" # default | none | low | high | max
+# No separate -think profile needed; /reasoning selects the mode and effort.
 
 [cloud.gemini]
 api_key = "AIzaXxXxXxXxXxXxXxXxXxXxXxXxXxXxXxXxXxX"
 model = "gemini-3.1-pro-preview"
+# reasoning_effort = "medium" # default | low | medium | high
 
 [cloud.openai]
 api_key = "sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 model = "gpt-5.4"
+# reasoning_effort = "high" # default | none | low | medium | high | xhigh
+# GPT-5.6 models also support max. /cloud and /reasoning offer supported levels.
 # Optional, for `/usage` only. OpenAI has no credit-balance endpoint at all —
 # not even for admin keys — so /usage reports spend via the Costs API, which
 # needs an admin key (sk-admin-...) with the api.usage.read scope. Or set

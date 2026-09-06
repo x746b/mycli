@@ -5,6 +5,8 @@
 
 pub mod anthropic;
 pub mod openai;
+pub mod reasoning;
+mod responses;
 mod stream;
 
 use async_trait::async_trait;

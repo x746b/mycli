@@ -77,6 +77,7 @@ pub struct Agent {
     /// `Some(false)` asks the provider to turn reasoning off outright, which is
     /// different from merely not displaying it.
     thinking_enabled: Option<bool>,
+    reasoning_effort: Option<String>,
     working_dir: PathBuf,
     permission_policy: Arc<dyn PermissionPolicy>,
     memory: Option<Arc<dyn Memory>>,
@@ -180,6 +181,11 @@ impl Agent {
         self.thinking_enabled
     }
 
+    /// Change effort between turns without resetting conversation history.
+    pub fn set_reasoning_effort(&mut self, effort: Option<String>) {
+        self.reasoning_effort = effort;
+    }
+
     /// Subscribe to the broadcast channel (requires enable_broadcast on builder).
     pub fn subscribe(&self) -> Option<broadcast::Receiver<AgentEvent>> {
         self.broadcast_tx.as_ref().map(|tx| tx.subscribe())
@@ -228,6 +234,7 @@ pub struct AgentBuilder {
     temperature: Option<f32>,
     thinking_budget: Option<u32>,
     thinking_enabled: Option<bool>,
+    reasoning_effort: Option<String>,
     working_dir: Option<PathBuf>,
     permission_policy: Option<Arc<dyn PermissionPolicy>>,
     memory: Option<Arc<dyn Memory>>,
@@ -258,6 +265,7 @@ impl Default for AgentBuilder {
             temperature: None,
             thinking_budget: None,
             thinking_enabled: None,
+            reasoning_effort: None,
             working_dir: None,
             permission_policy: None,
             memory: None,
@@ -331,6 +339,11 @@ impl AgentBuilder {
 
     pub fn thinking_budget(mut self, tokens: u32) -> Self {
         self.thinking_budget = Some(tokens);
+        self
+    }
+
+    pub fn reasoning_effort(mut self, effort: impl Into<String>) -> Self {
+        self.reasoning_effort = Some(effort.into());
         self
     }
 
@@ -445,6 +458,7 @@ impl AgentBuilder {
             temperature: self.temperature,
             thinking_budget: self.thinking_budget,
             thinking_enabled: self.thinking_enabled,
+            reasoning_effort: self.reasoning_effort,
             working_dir,
             permission_policy: self
                 .permission_policy

@@ -9,6 +9,7 @@ pub struct StreamAccumulator {
     partial_text: HashMap<usize, String>,
     partial_json: HashMap<usize, String>,
     partial_thinking: HashMap<usize, String>,
+    thinking_signatures: HashMap<usize, String>,
     block_types: HashMap<usize, String>,
     tool_use_ids: HashMap<usize, String>,
     tool_use_names: HashMap<usize, String>,
@@ -25,6 +26,7 @@ impl StreamAccumulator {
             partial_text: HashMap::new(),
             partial_json: HashMap::new(),
             partial_thinking: HashMap::new(),
+            thinking_signatures: HashMap::new(),
             block_types: HashMap::new(),
             tool_use_ids: HashMap::new(),
             tool_use_names: HashMap::new(),
@@ -68,6 +70,9 @@ impl StreamAccumulator {
                     .or_default()
                     .push_str(&thinking);
             }
+            StreamEvent::ThinkingSignature { index, signature } => {
+                self.thinking_signatures.insert(index, signature);
+            }
             StreamEvent::ContentBlockStop { index } => {
                 let block_type = self.block_types.get(&index).cloned().unwrap_or_default();
                 let block = match block_type.as_str() {
@@ -85,7 +90,7 @@ impl StreamAccumulator {
                     }
                     "thinking" => ContentBlock::Thinking {
                         thinking: self.partial_thinking.remove(&index).unwrap_or_default(),
-                        signature: String::new(),
+                        signature: self.thinking_signatures.remove(&index).unwrap_or_default(),
                     },
                     _ => ContentBlock::Text {
                         text: self.partial_text.remove(&index).unwrap_or_default(),

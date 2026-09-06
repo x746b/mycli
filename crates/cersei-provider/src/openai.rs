@@ -59,7 +59,7 @@ impl ToolCallAccumulator {
 
 /// Convert cersei Message history into OpenAI API messages, preserving tool
 /// use / tool result round-trip structure.
-fn convert_messages(messages: &[Message]) -> Vec<serde_json::Value> {
+pub(crate) fn convert_messages(messages: &[Message]) -> Vec<serde_json::Value> {
     let mut api_messages: Vec<serde_json::Value> = Vec::new();
 
     for msg in messages {
@@ -219,24 +219,6 @@ fn is_restricted_openai_model(model: &str) -> bool {
         || name.starts_with("o4")
 }
 
-/// GPT-5 models refuse function tools on /v1/chat/completions unless reasoning
-/// is explicitly switched off: "Function tools with reasoning_effort are not
-/// supported ... use /v1/responses or set reasoning_effort to 'none'". Sending
-/// `none` alongside tools is accepted by every gpt-5.x chat model.
-///
-/// Deliberately narrower than [`is_restricted_openai_model`]: the o-series
-/// accepts tools together with a real reasoning effort, and does not take
-/// `none` as a value, so it must not be included here.
-fn needs_reasoning_effort_none(model: &str) -> bool {
-    let name = model
-        .rsplit(['/', ':'])
-        .next()
-        .unwrap_or(model)
-        .to_ascii_lowercase();
-
-    name.starts_with("gpt-5")
-}
-
 #[async_trait::async_trait]
 impl Provider for OpenAi {
     fn name(&self) -> &str {
@@ -270,6 +252,25 @@ impl Provider for OpenAi {
         } else {
             request.model.clone()
         };
+
+        let effort = request.options.get::<String>("reasoning_effort");
+        if let Some(effort) = &effort {
+            crate::reasoning::validate(&model, effort)?;
+        }
+        // Explicit effort must never be silently downgraded to keep tools
+        // working. Responses supports both, preserving encrypted reasoning.
+        // An omitted effort also uses Responses, so "default" means the
+        // model's actual default rather than silently disabling reasoning.
+        if crate::reasoning::uses_responses(&model) {
+            let auth = match &self.auth {
+                Auth::ApiKey(key) | Auth::Bearer(key) => format!("Bearer {key}"),
+                Auth::OAuth { token, .. } => format!("Bearer {}", token.access_token),
+                Auth::Custom(_) => String::new(),
+            };
+            return crate::responses::complete(&self.client,
+                &format!("{}/responses", self.base_url.trim_end_matches('/')),
+                &auth, crate::responses::body(&request, &model));
+        }
 
         // Build OpenAI-format messages with proper tool use round-trips
         let mut api_messages: Vec<serde_json::Value> = Vec::new();
@@ -316,10 +317,8 @@ impl Provider for OpenAi {
             body["chat_template_kwargs"] = serde_json::json!({ "enable_thinking": false });
         }
 
-        // Tool use and reasoning are mutually exclusive on chat/completions for
-        // the gpt-5 family, so trade reasoning away to keep tools working.
-        if !request.tools.is_empty() && needs_reasoning_effort_none(&model) {
-            body["reasoning_effort"] = serde_json::json!("none");
+        if let Some(effort) = &effort {
+            crate::reasoning::apply_chat(&mut body, &model, effort);
         }
 
         if !request.tools.is_empty() {
@@ -784,18 +783,19 @@ mod tests {
     }
 
     #[test]
-    fn gpt5_disables_reasoning_for_tool_use() {
-        assert!(needs_reasoning_effort_none("gpt-5.6-sol"));
-        assert!(needs_reasoning_effort_none("gpt-5.6-luna"));
-        assert!(needs_reasoning_effort_none("gpt-5.6-terra"));
-        assert!(needs_reasoning_effort_none("gpt-5.5"));
-        assert!(needs_reasoning_effort_none("gpt-5.4"));
+    fn modern_openai_models_use_responses_for_reasoning_and_tools() {
+        use crate::reasoning::uses_responses;
+        assert!(uses_responses("gpt-5.6-sol"));
+        assert!(uses_responses("gpt-5.6-luna"));
+        assert!(uses_responses("gpt-6-astra"));
+        assert!(uses_responses("gpt-5.5"));
+        assert!(uses_responses("gpt-5.4"));
         // o-series takes a real effort value and rejects "none".
-        assert!(!needs_reasoning_effort_none("o3-mini"));
-        assert!(!needs_reasoning_effort_none("o1-preview"));
+        assert!(!uses_responses("o3-mini"));
+        assert!(!uses_responses("o1-preview"));
         // Non-OpenAI backends are untouched.
-        assert!(!needs_reasoning_effort_none("kimi-k3"));
-        assert!(!needs_reasoning_effort_none("deepseek-v4-pro"));
+        assert!(!uses_responses("kimi-k3"));
+        assert!(!uses_responses("deepseek-v4-pro"));
     }
 
     #[test]

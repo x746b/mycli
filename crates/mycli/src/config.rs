@@ -27,7 +27,7 @@
 
 use crate::Cli;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
 // ─── Cloud profile ──────────────────────────────────────────────────────────
@@ -61,6 +61,8 @@ pub struct CloudProfile {
     ///
     /// Distinct from `max_tokens`, which caps a single response.
     pub context_window: Option<u64>,
+    /// Model reasoning effort; omitted or "default" uses the provider default.
+    pub reasoning_effort: Option<String>,
 }
 
 // ─── MCP server entry ───────────────────────────────────────────────────────
@@ -68,8 +70,10 @@ pub struct CloudProfile {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpEntry {
     /// Server name (for display and routing)
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub name: String,
     /// Command to spawn (e.g. "npx", "python", "node")
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub command: String,
     /// Arguments to the command
     #[serde(default)]
@@ -77,6 +81,38 @@ pub struct McpEntry {
     /// Environment variables for the subprocess
     #[serde(default)]
     pub env: HashMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// Preserve unimplemented Codex options so they cannot be silently ignored.
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, toml::Value>,
+}
+
+impl McpEntry {
+    pub fn config_error(&self) -> Option<String> {
+        if self.url.is_some() {
+            return Some("HTTP MCP transport is not supported yet; use a command-based stdio server".into());
+        }
+        if !self.extra.is_empty() {
+            return Some(format!("Unsupported MCP settings: {}", self.extra.keys().cloned().collect::<Vec<_>>().join(", ")));
+        }
+        if self.name.is_empty() || self.command.trim().is_empty() {
+            return Some("MCP server needs a name and command".into());
+        }
+        None
+    }
+
+    pub fn server_config(&self) -> cersei_mcp::McpServerConfig {
+        let args: Vec<&str> = self.args.iter().map(String::as_str).collect();
+        let mut config = cersei_mcp::McpServerConfig::stdio(&self.name, &self.command, &args);
+        config.env = self.env.clone();
+        config.cwd = self.cwd.clone();
+        config
+    }
 }
 
 // ─── Main config ────────────────────────────────────────────────────────────
@@ -107,8 +143,11 @@ pub struct Config {
     #[serde(default)]
     pub context_window: u64,
     /// MCP servers
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mcp: Vec<McpEntry>,
+    /// Codex-compatible named MCP server tables.
+    #[serde(default)]
+    pub mcp_servers: BTreeMap<String, McpEntry>,
     /// Named cloud provider profiles
     #[serde(default)]
     pub cloud: HashMap<String, CloudProfile>,
@@ -119,6 +158,8 @@ pub struct Config {
     /// Ctrl+O or `/thinking`.
     #[serde(default = "default_true")]
     pub show_thinking: bool,
+    /// Reasoning effort for the active model, independent of display visibility.
+    pub reasoning_effort: Option<String>,
     /// Working directory (not serialized)
     #[serde(skip)]
     pub working_dir: PathBuf,
@@ -146,9 +187,11 @@ impl Default for Config {
             cost_limit: 0.0,
             context_window: 0,
             mcp: Vec::new(),
+            mcp_servers: BTreeMap::new(),
             cloud: HashMap::new(),
             persona: "code".into(),
             show_thinking: true,
+            reasoning_effort: None,
             working_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
         }
     }
@@ -200,6 +243,17 @@ fn builtin_preset(name: &str) -> Option<BuiltinPreset> {
 }
 
 impl Config {
+    /// Accept both formats. Named tables win for duplicates in the same file.
+    pub fn mcp_entries(&self) -> Vec<McpEntry> {
+        let mut servers: BTreeMap<String, McpEntry> = self.mcp.iter()
+            .map(|entry| (entry.name.clone(), entry.clone())).collect();
+        servers.extend(self.mcp_servers.clone());
+        servers.into_iter().map(|(name, mut entry)| {
+            entry.name = name;
+            entry
+        }).collect()
+    }
+
     /// Resolve a cloud profile by name. Merges the profile's settings with
     /// built-in presets and environment variables.
     pub fn resolve_cloud(&self, name: &str) -> Option<ResolvedCloud> {
@@ -259,6 +313,7 @@ impl Config {
             max_tokens,
             max_turns,
             context_window,
+            reasoning_effort: profile.and_then(|p| p.reasoning_effort.clone()),
         })
     }
 
@@ -287,6 +342,89 @@ pub struct ResolvedCloud {
     pub max_tokens: Option<u32>,
     pub max_turns: Option<u32>,
     pub context_window: Option<u64>,
+    pub reasoning_effort: Option<String>,
+}
+
+#[cfg(test)]
+mod mcp_config_tests {
+    use super::*;
+
+    #[test]
+    fn codex_tables_support_inline_and_nested_env() {
+        let config: Config = toml::from_str(r#"
+            [mcp_servers.command-vault]
+            command = "python3"
+            args = ["-m", "command_vault.server"]
+            env = { VAULT_READONLY = "1" }
+            cwd = "/tmp"
+            [mcp_servers.second]
+            command = "node"
+            [mcp_servers.second.env]
+            EXAMPLE = "value"
+        "#).unwrap();
+        let entries = config.mcp_entries();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].name, "command-vault");
+        assert_eq!(entries[0].env["VAULT_READONLY"], "1");
+        assert_eq!(entries[0].server_config().cwd.as_deref(), Some("/tmp"));
+        assert_eq!(entries[1].env["EXAMPLE"], "value");
+        assert!(entries.iter().all(|entry| entry.enabled && entry.config_error().is_none()));
+    }
+
+    #[test]
+    fn named_tables_override_legacy_duplicates_once() {
+        let config: Config = toml::from_str(r#"
+            [[mcp]]
+            name = "example"
+            command = "old"
+            [mcp_servers.example]
+            command = "new"
+        "#).unwrap();
+        assert_eq!(config.mcp_entries().len(), 1);
+        assert_eq!(config.mcp_entries()[0].command, "new");
+    }
+
+    #[test]
+    fn project_overrides_by_name_across_formats_and_can_disable() {
+        let mut base: Config = toml::from_str(r#"
+            [mcp_servers.example]
+            command = "global"
+            [mcp_servers.keep]
+            command = "keep"
+        "#).unwrap();
+        merge(&mut base, toml::from_str(r#"
+            [[mcp]]
+            name = "example"
+            command = "project"
+        "#).unwrap());
+        assert_eq!(base.mcp_entries()[0].command, "project");
+        merge(&mut base, toml::from_str(r#"
+            [mcp_servers.example]
+            enabled = false
+        "#).unwrap());
+        assert_eq!(base.mcp_entries().len(), 2);
+        assert!(!base.mcp_entries()[0].enabled);
+        assert_eq!(base.mcp_entries()[1].command, "keep");
+        let serialized = toml::to_string(&base).unwrap();
+        assert!(!serialized.contains("[[mcp]]"));
+        assert!(serialized.contains("[mcp_servers.example]"));
+        assert_eq!(toml::from_str::<Config>(&serialized).unwrap().mcp_entries().len(), 2);
+    }
+
+    #[test]
+    fn unsupported_codex_settings_are_retained_and_reported() {
+        let config: Config = toml::from_str(r#"
+            model = "still-loaded"
+            [mcp_servers.docs]
+            url = "https://example.invalid/mcp"
+            [mcp_servers.filtered]
+            command = "python3"
+            disabled_tools = ["example"]
+        "#).unwrap();
+        assert_eq!(config.model, "still-loaded");
+        assert!(config.mcp_entries()[0].config_error().unwrap().contains("HTTP MCP"));
+        assert!(config.mcp_entries()[1].config_error().unwrap().contains("disabled_tools"));
+    }
 }
 
 // ─── Config directories ──────────────────────────────────────────────────
@@ -334,6 +472,7 @@ fn load_toml(path: &Path) -> Option<Config> {
 }
 
 fn merge(base: &mut Config, overlay: Config) {
+    let overlay_mcp = overlay.mcp_entries();
     let defaults = Config::default();
     if !overlay.model.is_empty() && overlay.model != defaults.model {
         base.model = overlay.model;
@@ -362,9 +501,18 @@ fn merge(base: &mut Config, overlay: Config) {
     if overlay.cost_limit != defaults.cost_limit {
         base.cost_limit = overlay.cost_limit;
     }
-    if !overlay.mcp.is_empty() {
-        base.mcp = overlay.mcp;
+    if overlay.reasoning_effort.is_some() {
+        base.reasoning_effort = overlay.reasoning_effort;
     }
+    // Merge whole server definitions by name, independently of input syntax.
+    // Project entries (including enabled=false) replace global definitions.
+    let mut servers = BTreeMap::new();
+    for mut entry in base.mcp_entries().into_iter().chain(overlay_mcp) {
+        let name = std::mem::take(&mut entry.name);
+        servers.insert(name, entry);
+    }
+    base.mcp.clear();
+    base.mcp_servers = servers;
     // Merge cloud profiles (overlay wins per-profile)
     for (name, profile) in overlay.cloud {
         base.cloud.insert(name, profile);
@@ -424,6 +572,7 @@ pub fn apply_cli_overrides(cli: &Cli, config: &mut Config) {
             // describes the default provider, so it does not follow you onto a
             // cloud one — put a cloud model's window in its own profile.
             config.context_window = resolved.context_window.unwrap_or(0);
+            config.reasoning_effort = resolved.reasoning_effort;
         } else {
             eprintln!(
                 "Warning: unknown cloud profile '{}'. Available: {}",
@@ -457,6 +606,9 @@ pub fn apply_cli_overrides(cli: &Cli, config: &mut Config) {
     if cli.no_thinking {
         config.show_thinking = false;
     }
+    if let Some(effort) = &cli.reasoning {
+        config.reasoning_effort = Some(effort.to_ascii_lowercase());
+    }
 }
 
 /// Resolve tool tier. "auto" picks based on whether we're using a cloud provider.
@@ -477,6 +629,34 @@ pub fn resolve_tool_tier(config: &Config) -> &str {
 mod cloud_override_tests {
     use super::*;
     use clap::Parser;
+
+    #[test]
+    fn reasoning_profile_default_and_cli_precedence() {
+        let mut config: Config = toml::from_str(r#"
+            reasoning_effort = "low"
+            [cloud.openai]
+            reasoning_effort = "high"
+        "#).unwrap();
+        let cli = Cli::parse_from(["mycli", "--cloud", "openai"]);
+        apply_cli_overrides(&cli, &mut config);
+        assert_eq!(config.reasoning_effort.as_deref(), Some("high"));
+        let cli = Cli::parse_from(["mycli", "--cloud", "openai", "--reasoning", "default"]);
+        apply_cli_overrides(&cli, &mut config);
+        assert_eq!(config.reasoning_effort.as_deref(), Some("default"));
+        let cli = Cli::parse_from(["mycli", "--cloud", "gemini"]);
+        apply_cli_overrides(&cli, &mut config);
+        assert_eq!(config.reasoning_effort, None);
+    }
+
+    #[test]
+    fn omitted_effort_does_not_erase_a_configured_default() {
+        let mut config = Config::default();
+        merge(&mut config, toml::from_str("reasoning_effort = 'high'").unwrap());
+        merge(&mut config, Config::default());
+        assert_eq!(config.reasoning_effort.as_deref(), Some("high"));
+        merge(&mut config, toml::from_str("reasoning_effort = 'default'").unwrap());
+        assert_eq!(config.reasoning_effort.as_deref(), Some("default"));
+    }
 
     fn config_with_local_model() -> Config {
         let mut config = Config::default();

@@ -554,7 +554,7 @@ pub fn session_info(config: &crate::config::Config, model_display: &str) {
     );
     let _ = write!(
         err,
-        "  {DIM}ctrl+c interrupt · ctrl+d exit · / commands · ctrl+o thinking{RESET}\n"
+        "  {DIM}ctrl+c interrupt · ctrl+d exit · / commands · ctrl+o thinking · ctrl+u clear input{RESET}\n"
     );
     let _ = err.flush();
 }

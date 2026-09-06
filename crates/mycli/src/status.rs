@@ -1,9 +1,10 @@
-//! Persistent two-line footer.
+//! Persistent two-line footer with a divider above it.
 //!
-//! The last two terminal rows are held outside the scroll region, so the
+//! The last three terminal rows are held outside the scroll region, so the
 //! transcript scrolls underneath them:
 //!
 //! ```text
+//! ──────────────────────────────────────────────────────────────────────────
 //! /opt/mycli/bin (main)
 //! ↑2.8k ↓36 · ctx 2.8%/128k · think:on            (omlx) mlx-community_Qwen3.8-27B
 //! ```
@@ -19,13 +20,14 @@ use std::path::Path;
 use std::time::Duration;
 
 /// Rows held back from the scroll region.
-const FOOTER_ROWS: u16 = 2;
+const FOOTER_ROWS: u16 = 3;
 
 struct State {
     enabled: bool,
     model: String,
     provider: String,
     persona: String,
+    reasoning: String,
     cwd: String,
     branch: String,
     /// Tokens the model can hold, as resolved by the agent — the provider's
@@ -52,6 +54,7 @@ impl State {
             model: String::new(),
             provider: String::new(),
             persona: String::new(),
+            reasoning: String::new(),
             cwd: String::new(),
             branch: String::new(),
             context_window: 0,
@@ -91,6 +94,14 @@ fn fmt_rate(tps: f64) -> String {
 }
 
 static STATE: Mutex<State> = Mutex::new(State::new());
+
+pub fn set_reasoning(effort: Option<&str>, cloud: bool) {
+    STATE.lock().reasoning = if cloud {
+        format!(" · effort:{}", effort.unwrap_or("default"))
+    } else {
+        String::new()
+    };
+}
 
 /// Reserve the footer rows by shrinking the scroll region.
 ///
@@ -135,7 +146,7 @@ pub fn teardown() {
     // because resetting the region homes it just as setting one does.
     let mut out = String::from("\x1b[s");
     if let Ok((_, rows)) = crossterm::terminal::size() {
-        for row in (rows - FOOTER_ROWS + 1)..=rows {
+        for row in (rows.saturating_sub(FOOTER_ROWS) + 1)..=rows {
             out.push_str(&format!("\x1b[{row};1H\x1b[K"));
         }
     }
@@ -343,12 +354,13 @@ pub fn draw() {
     }
 
     let left = format!(
-        "↑{} ↓{}{speed} · ctx {} · {} · think:{}",
+        "↑{} ↓{}{speed} · ctx {} · {} · think:{}{}",
         fmt_tokens(state.total_in),
         fmt_tokens(state.total_out),
         ctx,
         state.persona,
         if crate::render::thinking_visible() { "on" } else { "off" },
+        state.reasoning,
     );
     let right = format!("({}) {}", state.provider, state.model);
 
@@ -365,7 +377,9 @@ pub fn draw() {
     // built piecewise can be cut in half by the agent thread's output and land
     // in the middle of a panel.
     let out = format!(
-        "\x1b[s\x1b[{};1H\x1b[K{DIM}{}{RESET}\x1b[{};1H\x1b[K{DIM}{}{RESET}\x1b[u",
+        "\x1b[s\x1b[{};1H\x1b[K{DIM}{}{RESET}\x1b[{};1H\x1b[K{DIM}{}{RESET}\x1b[{};1H\x1b[K{DIM}{}{RESET}\x1b[u",
+        rows - 2,
+        "─".repeat(cols),
         rows - 1,
         ui::truncate(&location, cols),
         rows,

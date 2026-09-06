@@ -62,13 +62,14 @@ fn cancel_current_turn() {
 }
 
 /// Outcome of the last MCP connection attempt: server name, and either the
-/// number of tools it exposed or why it failed.
+/// names of tools it exposed or why it failed.
 ///
 /// `/mcp` runs long after the agent was built and has no handle on the
 /// manager, so the result is recorded here rather than guessed at.
-static MCP_REPORT: Mutex<Vec<(String, std::result::Result<usize, String>)>> = Mutex::new(Vec::new());
+type McpReport = Vec<(String, std::result::Result<Vec<String>, String>)>;
+static MCP_REPORT: Mutex<McpReport> = Mutex::new(Vec::new());
 
-fn set_mcp_report(report: Vec<(String, std::result::Result<usize, String>)>) {
+fn set_mcp_report(report: McpReport) {
     *MCP_REPORT.lock() = report;
 }
 
@@ -289,7 +290,7 @@ impl MyHelper {
         Self {
             commands: vec![
                 "/help", "/clear", "/model", "/models", "/cloud", "/tools", "/mcp", "/usage",
-                "/persona", "/thinking", "/exit", "/quit",
+                "/persona", "/thinking", "/reasoning", "/exit", "/quit",
             ]
                 .into_iter()
                 .map(String::from)
@@ -349,6 +350,26 @@ impl Helper for MyHelper {}
 /// prints a block that already streamed in collapsed form.
 struct ToggleThinking;
 
+/// Keep blank submissions inside the editor so they do not leave frames in
+/// the transcript. Handle this before readline accepts (and prints) the line.
+struct SubmitInput;
+
+impl ConditionalEventHandler for SubmitInput {
+    fn handle(
+        &self,
+        _evt: &rustyline::Event,
+        _n: rustyline::RepeatCount,
+        _positive: bool,
+        ctx: &rustyline::EventContext<'_>,
+    ) -> Option<Cmd> {
+        Some(if ctx.line().trim().is_empty() {
+            Cmd::Noop
+        } else {
+            Cmd::AcceptLine
+        })
+    }
+}
+
 impl ConditionalEventHandler for ToggleThinking {
     fn handle(
         &self,
@@ -365,27 +386,19 @@ impl ConditionalEventHandler for ToggleThinking {
 
 // ─── Prompt ─────────────────────────────────────────────────────────────────
 
-/// Draw the input frame, then step back onto the line inside it.
-///
-/// Both rules are drawn *before* the editor runs. rustyline owns the input
-/// line and clears to end-of-line on every keystroke, so anything below it has
-/// to be on screen already — there is no "after" in which to close the box.
-/// Full-width rules rather than a bordered box for the same reason: the right
-/// edge could not survive typing, and the left edge could not be repeated on
-/// the rows a wrapped or pasted input spills onto.
-///
-/// If the input does wrap, rustyline overwrites the closing rule as it grows,
-/// which is exactly what the display looked like before — the frame degrades
-/// to the old behaviour rather than corrupting.
+/// Open the input frame. Leave the rows below the prompt to the editor:
+/// prepainting a closing rule there leaves fragments inside multiline input.
 fn prompt_open() {
     let rule = "─".repeat(ui::text_width());
-    print!("\n{DIM}{rule}{RESET}\n\n{DIM}{rule}{RESET}\n\x1b[2A");
+    print!("\n{DIM}{rule}{RESET}\n");
     let _ = io::stdout().flush();
 }
 
-/// Step past the closing rule that `prompt_open` already drew.
+/// Readline has moved below the entire submitted input, including wrapped
+/// rows. Only now is the position of the closing rule known.
 fn prompt_close() {
-    print!("\n");
+    let rule = "─".repeat(ui::text_width());
+    print!("{DIM}{rule}{RESET}\n");
     let _ = io::stdout().flush();
 }
 
@@ -807,6 +820,10 @@ fn build_tools(tier: &str, working_dir: &std::path::Path) -> Vec<Box<dyn cersei_
 
 async fn build_agent(config: &Config, cancel_token: CancellationToken) -> anyhow::Result<(Agent, String)> {
     let (provider, resolved_model) = build_provider(config)?;
+    let effort = config.reasoning_effort.as_deref().filter(|e| *e != "default");
+    if let Some(effort) = effort {
+        cersei_provider::reasoning::validate(&resolved_model, effort)?;
+    }
 
     // Context window, best source first: what the user configured, then what
     // the server states, then a guess from the model name inside the agent.
@@ -826,21 +843,23 @@ async fn build_agent(config: &Config, cancel_token: CancellationToken) -> anyhow
     let system_prompt = build_system_prompt(config);
     let tier = config::resolve_tool_tier(config);
     let mut tools = build_tools(tier, &config.working_dir);
+    let mut tool_names: Vec<String> = tools.iter().map(|t| t.name().to_string()).collect();
+    let mut report = Vec::new();
+    let mcp_entries = config.mcp_entries();
+    let mut mcp_configs = Vec::new();
 
     // Connect MCP servers and add their tools (full tier only)
-    if tier == "full" && !config.mcp.is_empty() {
-        let configs: Vec<cersei_mcp::McpServerConfig> = config
-            .mcp
-            .iter()
-            .map(|e| {
-                let args_ref: Vec<&str> = e.args.iter().map(|a| a.as_str()).collect();
-                let mut cfg = cersei_mcp::McpServerConfig::stdio(&e.name, &e.command, &args_ref);
-                cfg.env = e.env.clone();
-                cfg
-            })
-            .collect();
+    if tier == "full" && !mcp_entries.is_empty() {
+        for entry in mcp_entries.iter().filter(|entry| entry.enabled) {
+            if let Some(error) = entry.config_error() {
+                eprintln!("  {RED}mcp {}: {error}{RESET}", entry.name);
+                report.push((entry.name.clone(), Err(error)));
+            } else {
+                mcp_configs.push(entry.server_config());
+            }
+        }
 
-        match cersei_mcp::McpManager::connect(&configs).await {
+        match cersei_mcp::McpManager::connect(&mcp_configs).await {
             Ok(mgr) => {
                 let mgr = Arc::new(mgr);
                 let mcp_tools = mgr.tool_definitions().await;
@@ -848,24 +867,20 @@ async fn build_agent(config: &Config, cancel_token: CancellationToken) -> anyhow
                 // Report each server by name. A server that failed to start
                 // and one that started but exposed nothing both leave the
                 // tool list empty, and they need different fixes.
-                let mut report = Vec::new();
                 for (name, err) in mgr.failures() {
                     // The error already says it is about an MCP server.
                     let err = err.trim_start_matches("MCP error: ").to_string();
                     eprintln!("  {RED}mcp {name}: {err}{RESET}");
                     report.push((name.clone(), Err(err)));
                 }
-                for (name, count) in mgr.tool_counts().await {
-                    if count == 0 {
+                for (name, names) in mgr.tool_names_by_server().await {
+                    if names.is_empty() {
                         eprintln!(
                             "  {YELLOW}mcp {name}: started but exposed no tools{RESET}"
                         );
-                    } else {
-                        eprintln!("  {DIM}mcp {name}: {count} tools{RESET}");
                     }
-                    report.push((name, Ok(count)));
+                    report.push((name, Ok(names)));
                 }
-                set_mcp_report(report);
 
                 for tool_def in &mcp_tools {
                     tools.push(Box::new(McpToolBridge {
@@ -876,7 +891,7 @@ async fn build_agent(config: &Config, cancel_token: CancellationToken) -> anyhow
             }
             Err(e) => {
                 eprintln!("  {RED}mcp: connection failed — {e}{RESET}");
-                set_mcp_report(vec![("all servers".into(), Err(e.to_string()))]);
+                report.extend(mcp_configs.iter().map(|entry| (entry.name.clone(), Err(e.to_string()))));
             }
         }
     }
@@ -885,13 +900,18 @@ async fn build_agent(config: &Config, cancel_token: CancellationToken) -> anyhow
     // a local one — and it is offered below the full tier, since the small
     // local models are exactly the ones that cannot answer from memory.
     if is_local && tier != "simple" {
+        tool_names.push("WebSearch".into());
         tools.push(Box::new(crate::web_search::OmlxWebSearch::new(
             &config.base_url,
             api_key,
         )));
     }
 
-    let tool_names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
+    for (name, result) in &report {
+        if let Ok(names) = result {
+            tool_names.push(format!("mcp {name}: {} tools", names.len()));
+        }
+    }
     eprintln!("  \x1b[90mtools [{}]: {}\x1b[0m", tier, tool_names.join(", "));
 
     let mut builder = Agent::builder()
@@ -908,6 +928,9 @@ async fn build_agent(config: &Config, cancel_token: CancellationToken) -> anyhow
 
     if let Some(tokens) = context_window {
         builder = builder.context_window(tokens);
+    }
+    if let Some(effort) = effort {
+        builder = builder.reasoning_effort(effort);
     }
 
     // Starting with thinking off means off at the model level too, where the
@@ -930,14 +953,13 @@ async fn build_agent(config: &Config, cancel_token: CancellationToken) -> anyhow
     }
 
     // Pass MCP configs to builder (for ToolContext access)
-    for entry in &config.mcp {
-        let args_ref: Vec<&str> = entry.args.iter().map(|a| a.as_str()).collect();
-        let mut cfg = cersei_mcp::McpServerConfig::stdio(&entry.name, &entry.command, &args_ref);
-        cfg.env = entry.env.clone();
+    for cfg in mcp_configs {
         builder = builder.mcp_server(cfg);
     }
 
-    Ok((builder.build()?, resolved_model))
+    let agent = builder.build()?;
+    set_mcp_report(report);
+    Ok((agent, resolved_model))
 }
 
 /// Wraps an MCP tool as a cersei Tool, delegating execute to McpManager.
@@ -1343,6 +1365,7 @@ enum CommandResult {
     SwitchTier(String),
     SwitchPersona(String),
     Thinking(String),
+    Reasoning(String),
 }
 
 fn handle_command(cmd: &str, args: &str, config: &Config, current_model: &str) -> CommandResult {
@@ -1352,11 +1375,13 @@ fn handle_command(cmd: &str, args: &str, config: &Config, current_model: &str) -
             eprintln!("  /help              Show this help");
             eprintln!("  /model             Pick local oMLX model");
             eprintln!("  /model <name>      Switch to a local model");
-            eprintln!("  /cloud             Pick cloud provider");
+            eprintln!("  /cloud             Pick cloud provider and reasoning level");
+            eprintln!("  /reasoning [level] Pick or set reasoning effort (default resets it)");
             eprintln!("  /cloud <name>      Switch to cloud (e.g. kimi, deepseek)");
             eprintln!("  /tools             Show active tool tier");
             eprintln!("  /tools <tier>      Switch tier (simple/medium/full)");
             eprintln!("  /mcp               Show MCP server status");
+            eprintln!("  /mcp verbose       List all MCP tools grouped by server");
             eprintln!("  /usage             Show cloud provider balances");
             eprintln!("  /persona           Show or switch persona (code/redteam/blueteam/data/math/agentic)");
             eprintln!("  /thinking          Toggle reasoning display (same as ctrl+o)");
@@ -1366,6 +1391,7 @@ fn handle_command(cmd: &str, args: &str, config: &Config, current_model: &str) -
             eprintln!("  /exit              Exit mycli");
             eprintln!();
             eprintln!("{ACCENT}Shortcuts:{RESET}");
+            eprintln!("  ctrl+u             Clear the entire input (ctrl+y restores it)");
             eprintln!("  ctrl+o             Toggle reasoning display");
             eprintln!("  ctrl+c             Interrupt the current turn (twice to force exit)");
             eprintln!("  ctrl+d             Exit");
@@ -1451,27 +1477,48 @@ fn handle_command(cmd: &str, args: &str, config: &Config, current_model: &str) -
             }
         }
         "mcp" => {
-            if config.mcp.is_empty() {
-                eprintln!("  {DIM}No MCP servers configured. Add [[mcp]] to ~/.mycli/config.toml{RESET}");
+            let verbose = match args.trim() {
+                "" => false,
+                "verbose" => true,
+                _ => {
+                    eprintln!("  {DIM}Usage: /mcp [verbose]{RESET}");
+                    return CommandResult::Continue;
+                }
+            };
+            let entries = config.mcp_entries();
+            if entries.is_empty() {
+                eprintln!("  {DIM}No MCP servers configured. Add [mcp_servers.<name>] to ~/.mycli/config.toml{RESET}");
                 return CommandResult::Continue;
             }
 
             let tier = config::resolve_tool_tier(config);
             eprintln!("{ACCENT}MCP servers:{RESET}");
             let report = MCP_REPORT.lock().clone();
-            for entry in &config.mcp {
+            for entry in &entries {
                 let status = report.iter().find(|(name, _)| name == &entry.name);
                 let status = match status {
-                    Some((_, Ok(0))) => format!("{YELLOW}started, no tools{RESET}"),
-                    Some((_, Ok(n))) => format!("{GREEN}{n} tools{RESET}"),
+                    _ if !entry.enabled => format!("{DIM}disabled in config{RESET}"),
+                    Some((_, Ok(names))) if names.is_empty() => format!("{YELLOW}started, no tools{RESET}"),
+                    Some((_, Ok(names))) => format!("{GREEN}{} tools{RESET}", names.len()),
                     Some((_, Err(e))) => format!("{RED}{e}{RESET}"),
+                    None if entry.config_error().is_some() => format!("{RED}{}{RESET}", entry.config_error().unwrap()),
                     None if tier == "full" => format!("{DIM}not connected{RESET}"),
                     // Servers are only started on the full tier, so on a lower
                     // one there is nothing to report and nothing is wrong.
                     None => format!("{DIM}not loaded — tool tier is '{tier}'{RESET}"),
                 };
-                eprintln!("  {} {DIM}— {} {}{RESET}", entry.name, entry.command, entry.args.join(" "));
-                eprintln!("    {status}");
+                if verbose {
+                    eprintln!("  mcp {}: {status}", entry.name);
+                    if let Some((_, Ok(names))) = report.iter().find(|(name, _)| name == &entry.name) {
+                        if !names.is_empty() {
+                            eprintln!("\n  {}", names.join(", "));
+                        }
+                    }
+                    eprintln!();
+                } else {
+                    eprintln!("  {} {DIM}— {} {}{RESET}", entry.name, entry.command, entry.args.join(" "));
+                    eprintln!("    {status}");
+                }
             }
             if tier != "full" {
                 eprintln!("  {DIM}MCP servers start on the full tool tier: /tools full{RESET}");
@@ -1509,6 +1556,7 @@ fn handle_command(cmd: &str, args: &str, config: &Config, current_model: &str) -
             }
         }
         "thinking" | "think" => CommandResult::Thinking(args.trim().to_lowercase()),
+        "reasoning" | "effort" => CommandResult::Reasoning(args.trim().to_lowercase()),
         "clear" | "cls" => {
             print!("\x1b[2J\x1b[1;1H");
             let _ = io::stdout().flush();
@@ -1532,9 +1580,8 @@ fn handle_command(cmd: &str, args: &str, config: &Config, current_model: &str) -
 /// level is what actually saves the tokens and the latency, so that is what the
 /// command does — hiding the gutter follows as a consequence, not as the point.
 ///
-/// The switch reaches the model through the chat template, which only a server
-/// that renders one locally exposes. Against a hosted API there is nothing to
-/// send, so the command says so rather than silently doing half the job.
+/// Local models expose a chat-template switch. Cloud model effort is selected
+/// independently with `/reasoning`; this command only changes their display.
 fn apply_thinking_command(
     arg: &str,
     renderer: &mut Renderer,
@@ -1547,7 +1594,7 @@ fn apply_thinking_command(
         render::set_thinking_visible(on);
         if !switchable {
             renderer.notice(&format!(
-                "reasoning {} \x1b[90m(display only — on {} reasoning is set by model choice)\x1b[0m",
+                "reasoning {} \x1b[90m(display only — use /reasoning to set effort on {})\x1b[0m",
                 if on { "on" } else { "off" },
                 config.provider
             ));
@@ -1590,7 +1637,7 @@ async fn rebuild_agent(
     config: &Config,
     is_first: &mut bool,
     renderer: &mut Renderer,
-) {
+) -> bool {
     let new_cancel = CancellationToken::new();
     match build_agent(config, new_cancel).await {
         Ok((new_agent, resolved)) => {
@@ -1602,14 +1649,55 @@ async fn rebuild_agent(
                 "  \x1b[32mSwitched to {resolved}\x1b[0m \x1b[90m({})\x1b[0m",
                 config.provider
             );
+            true
         }
         Err(e) => {
             renderer.error(&format!("Failed to switch: {e}"));
+            false
         }
     }
 }
 
 // ─── Main entry ─────────────────────────────────────────────────────────────
+
+/// Outer None is cancellation; inner None means use the server default.
+fn pick_reasoning(model: &str, current: Option<&str>) -> Option<Option<String>> {
+    let levels = cersei_provider::reasoning::levels(model);
+    if levels.is_empty() {
+        eprintln!("  {DIM}No configurable reasoning levels are known for {model}; using its default.{RESET}");
+        return Some(None);
+    }
+    let mut values = vec!["default"];
+    values.extend_from_slice(levels);
+    let labels: Vec<String> = values.iter().map(|value| {
+        let description = match *value {
+            "default" => "Default — use the model's default",
+            "none" => "Off — disable reasoning",
+            "on" => "On — enable reasoning",
+            "minimal" => "Minimal — least reasoning",
+            "low" => "Low — faster responses, lighter reasoning",
+            "medium" => "Medium — balanced speed and depth",
+            "high" => "High — deeper reasoning",
+            "xhigh" => "Extra high — more reasoning for complex tasks",
+            "max" => "Max — highest effort, more token usage",
+            "ultra" => "Ultra — extended reasoning, more token usage",
+            _ => value,
+        };
+        description.to_string()
+    }).collect();
+    let current_index = values.iter().position(|v| *v == current.unwrap_or("default")).unwrap_or(0);
+    let selected = interactive_picker(&labels, &labels[current_index], &format!("Select reasoning level for {model}"))?;
+    let value = values[labels.iter().position(|label| *label == selected)?];
+    Some((value != "default").then(|| value.to_string()))
+}
+
+fn remember_reasoning(config: &mut Config, effort: Option<String>) {
+    config.reasoning_effort = effort.clone();
+    // Session-only preference; config.toml may supply a persistent default.
+    // Store "default" explicitly to override an earlier profile setting.
+    config.cloud.entry(config.provider.clone()).or_default().reasoning_effort =
+        Some(effort.unwrap_or_else(|| "default".into()));
+}
 
 pub async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
     let cancel_token = CancellationToken::new();
@@ -1670,6 +1758,16 @@ pub async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
         .build();
     let mut editor = Editor::with_config(rl_config)?;
     editor.set_helper(Some(MyHelper::new()));
+    // The default Ctrl+U only kills back to the start of the current line.
+    // Kill the whole buffer so accidental multiline pastes can be cleared
+    // from any cursor position, with Ctrl+Y available to restore the text.
+    editor.bind_sequence(
+        KeyEvent::ctrl('u'),
+        Cmd::Kill(rustyline::Movement::WholeBuffer),
+    );
+    for key in [KeyEvent::from('\r'), KeyEvent::ctrl('j')] {
+        editor.bind_sequence(key, EventHandler::Conditional(Box::new(SubmitInput)));
+    }
     // Bind both cases: which one a terminal reports for Ctrl+O varies.
     for key in [KeyEvent::ctrl('o'), KeyEvent::ctrl('O')] {
         editor.bind_sequence(key, EventHandler::Conditional(Box::new(ToggleThinking)));
@@ -1687,6 +1785,7 @@ pub async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
     let mut is_first = true;
 
     status::setup();
+    status::set_reasoning(config.reasoning_effort.as_deref(), !is_local_provider(&config));
     status::set_context(&current_model, &config.provider, &config.persona, &config.working_dir, agent.context_window());
     status::draw();
 
@@ -1735,33 +1834,48 @@ pub async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                     config.context_window = fresh.context_window;
                     config.max_tokens = fresh.max_tokens;
                     config.max_turns = fresh.max_turns;
+                    config.reasoning_effort = fresh.reasoning_effort;
                     status::reset_tokens();
                     rebuild_agent(&mut agent, &mut current_model, &config, &mut is_first, &mut renderer).await;
                 }
                 CommandResult::SwitchCloud(cloud_name) => {
+                    // Resolve and pick on a copy: Esc must leave the active
+                    // provider, credentials, effort and conversation untouched.
+                    let mut next_config = config.clone();
                     if cloud_name == "omlx" {
                         // Back to local
                         let fresh = config::load();
-                        config.provider = "omlx".into();
-                        config.base_url = fresh.base_url;
-                        config.api_key = fresh.api_key;
-                        config.model = String::new();
-                        config.context_window = fresh.context_window;
+                        next_config.provider = "omlx".into();
+                        next_config.base_url = fresh.base_url;
+                        next_config.api_key = fresh.api_key;
+                        next_config.model = String::new();
+                        next_config.context_window = fresh.context_window;
+                        next_config.reasoning_effort = fresh.reasoning_effort;
                     } else if let Some(resolved) = config.resolve_cloud(&cloud_name) {
-                        config.provider = resolved.name;
-                        config.base_url = resolved.base_url;
-                        config.api_key = resolved.api_key;
-                        config.model = resolved.model;
+                        next_config.provider = resolved.name;
+                        next_config.base_url = resolved.base_url;
+                        next_config.api_key = resolved.api_key;
+                        next_config.model = resolved.model;
+                        next_config.reasoning_effort = resolved.reasoning_effort;
                         if let Some(mt) = resolved.max_tokens {
-                            config.max_tokens = mt;
+                            next_config.max_tokens = mt;
                         }
                         if let Some(mt) = resolved.max_turns {
-                            config.max_turns = mt;
+                            next_config.max_turns = mt;
                         }
                         // A profile's window replaces whatever the previous
                         // provider used; without this the old model's figure
                         // would follow you across the switch.
-                        config.context_window = resolved.context_window.unwrap_or(0);
+                        next_config.context_window = resolved.context_window.unwrap_or(0);
+                        if next_config.provider == config.provider {
+                            next_config = config.clone();
+                            next_config.model = current_model.clone();
+                        }
+                        let Some(effort) = pick_reasoning(&next_config.model, next_config.reasoning_effort.as_deref()) else {
+                            renderer.notice("Cancelled");
+                            continue;
+                        };
+                        remember_reasoning(&mut next_config, effort);
                     } else {
                         renderer.error(&format!(
                             "Unknown cloud '{}'. Available: {}. Add [cloud.{}] to ~/.mycli/config.toml",
@@ -1771,8 +1885,14 @@ pub async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                         ));
                         continue;
                     }
-                    status::reset_tokens();
-                    rebuild_agent(&mut agent, &mut current_model, &config, &mut is_first, &mut renderer).await;
+                    if next_config.provider == config.provider && next_config.model == current_model {
+                        agent.set_reasoning_effort(next_config.reasoning_effort.clone());
+                        config = next_config;
+                        renderer.notice(&format!("reasoning effort → {}", config.reasoning_effort.as_deref().unwrap_or("default")));
+                    } else if rebuild_agent(&mut agent, &mut current_model, &next_config, &mut is_first, &mut renderer).await {
+                        config = next_config;
+                        status::reset_tokens();
+                    }
                 }
                 CommandResult::SwitchTier(tier) => {
                     config.tool_tier = tier;
@@ -1786,8 +1906,34 @@ pub async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                 CommandResult::Thinking(arg) => {
                     apply_thinking_command(&arg, &mut renderer, &mut agent, &config)
                 }
+                CommandResult::Reasoning(arg) => {
+                    if is_local_provider(&config) {
+                        renderer.notice("Use /thinking on|off for local models. /reasoning configures cloud models.");
+                        continue;
+                    }
+                    let effort = if arg.is_empty() {
+                        let Some(effort) = pick_reasoning(&current_model, config.reasoning_effort.as_deref()) else {
+                            renderer.notice("Cancelled");
+                            continue;
+                        };
+                        effort
+                    } else if arg == "default" {
+                        None
+                    } else {
+                        let arg = if arg == "off" { "none".to_string() } else { arg };
+                        if let Err(e) = cersei_provider::reasoning::validate(&current_model, &arg) {
+                            renderer.error(&e.to_string());
+                            continue;
+                        }
+                        Some(arg)
+                    };
+                    agent.set_reasoning_effort(effort.clone());
+                    remember_reasoning(&mut config, effort);
+                    renderer.notice(&format!("reasoning effort → {}", config.reasoning_effort.as_deref().unwrap_or("default")));
+                }
                 CommandResult::Continue => {}
             }
+            status::set_reasoning(config.reasoning_effort.as_deref(), !is_local_provider(&config));
             status::set_context(&current_model, &config.provider, &config.persona, &config.working_dir, agent.context_window());
             status::draw();
             continue;

@@ -11,11 +11,11 @@ $ mycli
  | | | | | | |_| | |____| |____| |
  |_| |_| |_|\__, |\_____|______|_|
              __/ |
-            |___/           v1.0.0
+            |___/           v1.1.0
 
   tools [medium]: Read, Write, Bash, Edit, Glob, Grep, WebSearch
   omlx · Qwen3.8-27B · tools:medium · max_turns:30 · /opt/mycli
-  ctrl+c interrupt · ctrl+d exit · / commands · ctrl+o thinking
+  ctrl+c interrupt · ctrl+d exit · / commands · ctrl+o thinking · ctrl+u clear input
 
 ───────────────────────────────────────────────────────────────────────────────────────────────
  › hey
@@ -92,8 +92,7 @@ api_key = "your-omlx-key"
 # show_thinking = false    # start with reasoning off (see Reasoning)
 
 # ─── MCP servers ───────────────────────────────────────────
-[[mcp]]
-name = "command-vault"
+[mcp_servers.command-vault]
 command = "/path/to/venv/bin/python"
 args = ["-m", "command_vault.server"]
 env = { VAULT_DB = "/path/to/vault.db", VAULT_READONLY = "1" }
@@ -144,6 +143,7 @@ mycli --cloud deepseek -y "refactor main.rs"   # auto-approve tools
 |------|-------------|
 | `-m, --model` | Model name (oMLX model ID or cloud model) |
 | `--cloud <name>` | Use cloud provider (kimi, deepseek, gemini, openai, or config profile) |
+| `--reasoning <level>` | Cloud reasoning effort; `default` uses the model default |
 | `-t, --tools <tier>` | Tool tier: `simple`, `medium`, `full`, or `auto` (default) |
 | `-p, --persona <name>` | Persona: `code` (default), `redteam`, `blueteam`, `data`, `math`, `agentic` |
 | `-y, --yes` | Auto-approve all tool permissions |
@@ -162,22 +162,48 @@ mycli --cloud deepseek -y "refactor main.rs"   # auto-approve tools
 | `/help` | Show all commands |
 | `/model` | Interactive local model picker (switches back from cloud automatically) |
 | `/model <name>` | Switch to a local oMLX model |
-| `/cloud` | Interactive cloud provider picker |
+| `/cloud` | Pick a cloud provider, then reasoning effort for its configured model |
 | `/cloud <name>` | Switch to cloud (e.g. `kimi`, `deepseek`, `gemini`) |
+| `/reasoning [level]` | Pick or set reasoning effort without resetting the conversation; `default` resets the override |
 | `/tools` | Interactive tool tier picker |
 | `/tools <tier>` | Switch tier (`simple` / `medium` / `full`) |
 | `/persona` | Interactive persona picker |
 | `/usage` | Show cloud balances / spend (Kimi, DeepSeek, OpenAI) |
 | `/mcp` | Show each MCP server's status — tools discovered, or why it failed |
+| `/mcp verbose` | List every discovered MCP tool, grouped by server |
 | `/thinking [on\|off]` | Turn reasoning on or off **at the model level** (see below) |
 | `/thinking last` | Reprint the last reasoning block |
 | `/clear` | Clear screen |
 | `/exit` | Exit |
 
+Cloud reasoning is independent of reasoning **display**: `Ctrl+O` and cloud
+`/thinking` hide/show reasoning, while `/reasoning high` changes the model's
+actual effort. The footer shows `effort:high` alongside `think:on/off`.
+The picker offers only known supported levels for the configured model;
+unknown models keep their server default. Esc cancels without switching.
+
+Selections are remembered per profile for the current session. For a persistent
+default, add `reasoning_effort = "high"` under `[cloud.openai]` (or another cloud
+profile) in your config. `mycli --cloud openai --reasoning high` overrides it.
+
+You can use a single DeepSeek profile and select Off, Low, High, or Max; separate
+`deepseek-think` profiles are optional. Existing profiles still work. Kimi K3
+offers Low, High, and Max, while Gemini choices depend on the model.
+
+Modern OpenAI models use the Responses API so reasoning works with function
+tools. Requests use `store: false` and replay encrypted reasoning state between
+tool calls. Custom OpenAI proxies must support `/responses` for these models.
+Supported effort choices follow the [OpenAI model documentation](https://developers.openai.com/api/docs/models/gpt-5.6-luna),
+[DeepSeek thinking controls](https://api-docs.deepseek.com/guides/thinking_mode/),
+[Kimi K3 model usage](https://github.com/MoonshotAI/Kimi-K3#6-model-usage), and
+[Gemini compatibility documentation](https://ai.google.dev/gemini-api/docs/openai#thinking).
+
 ### Keyboard shortcuts
 
 | Key | Action |
 |-----|--------|
+| `Ctrl+U` | Clear the entire current input, including multiline pastes, from any cursor position |
+| `Ctrl+Y` | Restore the text cleared with Ctrl+U |
 | `Esc` | Interrupt the running turn, at any point during generation |
 | `Ctrl+O` | Show/hide reasoning **display** (works at the prompt *and* mid-turn) |
 | `Ctrl+C` | Interrupt the current turn (twice in quick succession to force exit) |
@@ -231,13 +257,13 @@ Models that emit reasoning have it streamed inline, dimmed behind a gutter:
   │ precedence level, so `*` binds before `+`.
 ```
 
-There are two separate controls, and the distinction matters:
+Reasoning effort and its display are separate controls:
 
 - **`/thinking on|off`** switches reasoning at the **model level**. Local servers
   that render a chat template (oMLX, vLLM, SGLang) expose the template's own
   thinking flag, so this genuinely stops the model reasoning — saving the tokens
-  and the latency, not just hiding the output. Hosted APIs have no such switch:
-  there `/thinking` says so plainly and falls back to display only.
+  and the latency, not just hiding the output. For cloud models this command
+  changes display only; use **`/reasoning`** to select model-level effort.
 - **`Ctrl+O`** only shows or hides what arrives, collapsing it to a live counter
   (`✻ Thinking… 412 chars · ctrl+o to show`). Works at the prompt or mid-turn.
 
@@ -447,8 +473,35 @@ Each line is numbered, with the cursor position and scroll region reported at th
 ## MCP (Model Context Protocol)
 
 MyCLI connects to MCP servers over stdio transport. Tools are auto-discovered at
-startup on the `full` tool tier — add `[[mcp]]` blocks to your config (see
+startup on the `full` tool tier — add `[mcp_servers.<name>]` tables to your config (see
 [Configuration](#configuration)), then use `/mcp` in the REPL to see server status.
+
+The table syntax matches [Codex MCP configuration](https://developers.openai.com/codex/mcp).
+Copy command-based server definitions directly, including either inline `env`
+or a nested environment table:
+
+```toml
+[mcp_servers.command-vault]
+command = "/opt/command-vault-mcp/.venv/bin/python"
+args = ["-m", "command_vault.server"]
+enabled = true
+# cwd = "/path/to/project"
+
+[mcp_servers.command-vault.env]
+VAULT_DB = "/path/to/vault.db"
+VAULT_READONLY = "1"
+```
+
+Supported fields are `command`, `args`, `env`, `cwd`, and `enabled`. HTTP `url`
+servers and other Codex-specific settings are reported as unsupported in
+`/mcp`; mycli does not start servers with unsupported settings. This prevents
+copied tool filters or approval settings from being silently ignored.
+
+Legacy `[[mcp]]` entries remain supported. If both formats define the same
+server in one file, the named table wins. Project definitions replace global
+definitions **by server name**, keeping other servers; use `enabled = false`
+to disable an inherited server. mycli reads its own config files, so copying
+settings does not change or automatically load your Codex configuration.
 
 ---
 

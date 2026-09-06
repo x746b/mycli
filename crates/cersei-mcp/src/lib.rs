@@ -23,6 +23,8 @@ pub struct McpServerConfig {
     pub args: Vec<String>,
     #[serde(default)]
     pub env: HashMap<String, String>,
+    #[serde(default)]
+    pub cwd: Option<String>,
     pub url: Option<String>,
     #[serde(rename = "type", default = "default_type")]
     pub server_type: String,
@@ -37,6 +39,7 @@ impl McpServerConfig {
             command: Some(command.into()),
             args: args.iter().map(|s| s.to_string()).collect(),
             env: HashMap::new(),
+            cwd: None,
             url: None,
             server_type: "stdio".to_string(),
         }
@@ -48,6 +51,7 @@ impl McpServerConfig {
             command: None,
             args: Vec::new(),
             env: HashMap::new(),
+            cwd: None,
             url: Some(url.into()),
             server_type: "sse".to_string(),
         }
@@ -127,6 +131,7 @@ impl McpClient {
                 command,
                 &config_expanded.args,
                 &config_expanded.env,
+                config_expanded.cwd.as_deref(),
             ).await?;
 
             // Initialize handshake
@@ -316,6 +321,16 @@ impl McpManager {
         counts
     }
 
+    /// Discovered tool names grouped by server, in stable server order.
+    pub async fn tool_names_by_server(&self) -> Vec<(String, Vec<String>)> {
+        let clients = self.clients.lock().await;
+        let mut servers: Vec<_> = clients.iter().map(|(name, client)| {
+            (name.clone(), client.tools.iter().map(|tool| tool.name.clone()).collect())
+        }).collect();
+        servers.sort_by(|a, b| a.0.cmp(&b.0));
+        servers
+    }
+
     /// Get all discovered tool definitions across all servers.
     pub async fn tool_definitions(&self) -> Vec<ToolDefinition> {
         let clients = self.clients.lock().await;
@@ -430,6 +445,7 @@ pub fn expand_server_config(config: &McpServerConfig) -> McpServerConfig {
         command: config.command.as_deref().map(expand_env_vars),
         args: config.args.iter().map(|a| expand_env_vars(a)).collect(),
         env: config.env.iter().map(|(k, v)| (k.clone(), expand_env_vars(v))).collect(),
+        cwd: config.cwd.as_deref().map(expand_env_vars),
         url: config.url.as_deref().map(expand_env_vars),
         server_type: config.server_type.clone(),
     }
@@ -503,6 +519,7 @@ mod tests {
             command: Some("${CERSEI_MCP_CMD}".into()),
             args: vec!["${CERSEI_MCP_CMD}".into()],
             env: HashMap::from([("KEY".into(), "${CERSEI_MCP_CMD}".into())]),
+            cwd: Some("${CERSEI_MCP_CMD}".into()),
             url: None,
             server_type: "stdio".into(),
         };
@@ -510,6 +527,7 @@ mod tests {
         assert_eq!(expanded.command.as_deref(), Some("/usr/bin/node"));
         assert_eq!(expanded.args[0], "/usr/bin/node");
         assert_eq!(expanded.env["KEY"], "/usr/bin/node");
+        assert_eq!(expanded.cwd.as_deref(), Some("/usr/bin/node"));
         std::env::remove_var("CERSEI_MCP_CMD");
     }
 }
