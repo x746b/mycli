@@ -63,9 +63,6 @@ MyCLI supports 3 tool tiers including MCP in "full"
     medium (active)
   ▸ full 
 
- ───────────────────────────────────────────────────────────────────────────────────────────────
- › /tools
- ───────────────────────────────────────────────────────────────────────────────────────────────
   tools [full]: Read, Write, Bash, Edit, Glob, Grep, WebFetch, Skill, WebSearch,
   mcp command-vault: 19 tools, mcp cve-lookup: 8 tools
 ```
