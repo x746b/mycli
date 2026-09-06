@@ -35,11 +35,34 @@ $ mycli
 ───────────────────────────────────────────────────────────────────────────────────────────────
   Select cloud: (↑↓ select, Enter confirm, Esc cancel)
     deepseek
-    deepseek-think
     gemini
     kimi
   ▸ openai
+
+ Select reasoning level for gpt-5.6-luna: (↑↓ select, Enter confirm, Esc cancel)
+    Default — use the model's default (active)
+    Off — disable reasoning
+  ▸ Low — faster responses, lighter reasoning
+    Medium — balanced speed and depth
+    High — deeper reasoning
+    Extra high — more reasoning for complex tasks
+    Max — highest effort, more token usage
+
+───────────────────────────────────────────────────────────────────────────────────────────────
+ › /tools
+───────────────────────────────────────────────────────────────────────────────────────────────
+  Select tool tier: (↑↓ select, Enter confirm, Esc cancel)
+    simple
+    medium
+  ▸ full (active)
+
+ ───────────────────────────────────────────────────────────────────────────────────────────────
+ › /tools
+ ───────────────────────────────────────────────────────────────────────────────────────────────
+  tools [full]: Read, Write, Bash, Edit, Glob, Grep, WebFetch, Skill, WebSearch, mcp command-vault: 19 tools, mcp cve-lookup: 8 tools
+  Switched to Jundot_Qwen3.8-Flash-Next-oQ4e-mtp (omlx)
 ```
+
 
 
 ```bash
