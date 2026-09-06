@@ -70,6 +70,7 @@ MyCLI supports 3 tool tiers including MCP in "full"
   mcp command-vault: 19 tools, mcp cve-lookup: 8 tools
 ```
 
+Single shoots:
 ```bash
 # single-shot with tiny model and simple toolset:
 mycli -t simple -m RedSage-Qwen3-8B-DPO         
@@ -121,7 +122,6 @@ api_key = "your-omlx-key"
 
 # ─── MCP servers ───────────────────────────────────────────
 # Tools auto-discovered on startup (full tier only)
-# Codex syntax
 
 [mcp_servers.command-vault]
 command = "/opt/command-vault-mcp/.venv/bin/python"
