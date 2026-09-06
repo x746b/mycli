@@ -2,6 +2,7 @@
 
 Lightweight AI coding CLI for testing LLM capabilities — especially local models running on [oMLX](https://github.com/jundot/omlx). Cloud providers (Kimi, DeepSeek, Gemini, OpenAI) supported as first-class fallback.
 
+Screen:
 ```bash
 $ mycli
                     _____ _     __
@@ -29,9 +30,10 @@ $ mycli
 ───────────────────────────────────────────────────────────────────────────────────────────────
 /opt/mycli (main)
 ↑2.9k ↓29 · pp 2381 t/s · tg 153 t/s · ctx 1.1%/262.1k · code · think:on     (omlx) Qwen3.8-27B
+```
 
-...
-
+Cloud inference providers supported :
+```bash
 ───────────────────────────────────────────────────────────────────────────────────────────────
  › /cloud
 ───────────────────────────────────────────────────────────────────────────────────────────────
@@ -49,8 +51,10 @@ $ mycli
     High — deeper reasoning
     Extra high — more reasoning for complex tasks
     Max — highest effort, more token usage
+```
 
-...
+MyCLI supports 3 tool tiers including MCP in "full"
+```bash
 ───────────────────────────────────────────────────────────────────────────────────────────────
  › /tools
 ───────────────────────────────────────────────────────────────────────────────────────────────
@@ -58,7 +62,6 @@ $ mycli
     simple
     medium (active)
   ▸ full 
-...
 
  ───────────────────────────────────────────────────────────────────────────────────────────────
  › /tools
@@ -66,7 +69,6 @@ $ mycli
   tools [full]: Read, Write, Bash, Edit, Glob, Grep, WebFetch, Skill, WebSearch,
   mcp command-vault: 19 tools, mcp cve-lookup: 8 tools
 ```
-
 
 ```bash
 # single-shot with tiny model and simple toolset:
