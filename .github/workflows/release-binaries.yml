@@ -8,26 +8,55 @@ on:
         required: true
         default: v1.1.0
         type: string
+      platform:
+        description: Platform to build (or all)
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - linux-arm64
+          - linux-x86_64
+          - macos-arm64
+          - macos-x86_64
 
 permissions:
   contents: read
 
 jobs:
+  platforms:
+    name: Select build platforms
+    runs-on: ubuntu-22.04
+    outputs:
+      matrix: ${{ steps.select.outputs.matrix }}
+    steps:
+      - id: select
+        env:
+          SELECTED_PLATFORM: ${{ inputs.platform }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+
+          platforms = [
+              {"platform": "linux-arm64", "runner": "ubuntu-22.04-arm", "target": "aarch64-unknown-linux-gnu"},
+              {"platform": "linux-x86_64", "runner": "ubuntu-22.04", "target": "x86_64-unknown-linux-gnu"},
+              {"platform": "macos-arm64", "runner": "macos-14", "target": "aarch64-apple-darwin"},
+              {"platform": "macos-x86_64", "runner": "macos-15-intel", "target": "x86_64-apple-darwin"},
+          ]
+          selected = os.environ["SELECTED_PLATFORM"]
+          matrix = [p for p in platforms if selected == "all" or p["platform"] == selected]
+          if not matrix:
+              raise SystemExit("Unknown build platform")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write("matrix=" + json.dumps({"include": matrix}) + "\n")
+          PY
   build:
     name: Build ${{ matrix.platform }}
+    needs: platforms
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - platform: linux-arm64
-            runner: ubuntu-22.04-arm
-            target: aarch64-unknown-linux-gnu
-          - platform: macos-arm64
-            runner: macos-14
-            target: aarch64-apple-darwin
-          - platform: macos-x86_64
-            runner: macos-15-intel
-            target: x86_64-apple-darwin
+      matrix: ${{ fromJSON(needs.platforms.outputs.matrix) }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 40
     env:
