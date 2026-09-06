@@ -520,6 +520,53 @@ Each line is numbered, with the cursor position and scroll region reported at th
 
 ---
 
+## Skills
+
+The `Skill` tool is available on the `full` tool tier. Ask mycli to **list
+available skills** or **use simplify**; the model calls the tool to list or load
+the instructions. There is no dedicated `/skills` command yet.
+
+### Bundled skills
+
+These seven prompt templates are defined in
+[`crates/cersei-tools/src/skills/bundled.rs`](crates/cersei-tools/src/skills/bundled.rs)
+and compiled into the binary. They are not separate `SKILL.md` files; changing
+them requires editing the Rust source and rebuilding mycli.
+
+| Skill | Aliases | Purpose |
+| --- | --- | --- |
+| `simplify` | — | Review changed code for reuse, quality, and unnecessary complexity |
+| `remember` | `mem`, `save` | Prompt the model to save information to memory |
+| `debug` | `diagnose` | Investigate an issue and suggest a fix |
+| `stuck` | `help-me`, `unblock` | Reconsider assumptions and alternative approaches |
+| `verify` | `check`, `validate` | Check recent changes and run relevant tests |
+| `commit` | — | Inspect changes and create a Git commit |
+| `loop` | — | Request a recurring task; requires scheduling tools |
+
+Loading a skill returns its instruction text to the model, with `$ARGUMENTS`
+expanded. Subsequent tool calls still follow normal approval rules. Templates
+do not add capabilities: for example, `loop` expects `CronCreate`, which mycli's
+default tool set does not include.
+
+### Skills on disk
+
+Discovery also checks these locations under both the working directory and
+the user's home directory:
+
+- `.claude/commands/*.md`
+- `.claude/skills/<name>/SKILL.md`
+- `.agents/skills/<name>/SKILL.md`
+
+Existing directory symlinks work too, so a linked `~/.claude/commands` directory
+makes its top-level command files available from any project. Discovery is
+shallow; nested command folders are not automatically listed.
+
+Bundled names take precedence over matching disk skills, followed by project
+skills and then home-directory skills. `.codex-htb/skills` is not automatically
+searched, and supporting references/scripts are not automatically loaded.
+
+---
+
 ## MCP (Model Context Protocol)
 
 MyCLI connects to MCP servers over stdio transport. Tools are auto-discovered at
