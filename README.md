@@ -26,9 +26,11 @@ $ mycli
 
 ● Hey! What's up?
 
-
+───────────────────────────────────────────────────────────────────────────────────────────────
 /opt/mycli (main)
 ↑2.9k ↓29 · pp 2381 t/s · tg 153 t/s · ctx 1.1%/262.1k · code · think:on     (omlx) Qwen3.8-27B
+
+...
 
 ───────────────────────────────────────────────────────────────────────────────────────────────
  › /cloud
@@ -48,21 +50,21 @@ $ mycli
     Extra high — more reasoning for complex tasks
     Max — highest effort, more token usage
 
+...
 ───────────────────────────────────────────────────────────────────────────────────────────────
  › /tools
 ───────────────────────────────────────────────────────────────────────────────────────────────
   Select tool tier: (↑↓ select, Enter confirm, Esc cancel)
     simple
-    medium
-  ▸ full (active)
+    medium (active)
+  ▸ full 
+...
 
  ───────────────────────────────────────────────────────────────────────────────────────────────
  › /tools
  ───────────────────────────────────────────────────────────────────────────────────────────────
   tools [full]: Read, Write, Bash, Edit, Glob, Grep, WebFetch, Skill, WebSearch,
   mcp command-vault: 19 tools, mcp cve-lookup: 8 tools
-
-Switched to Jundot_Qwen3.8-Flash-Next-oQ4e-mtp (omlx)
 ```
 
 
