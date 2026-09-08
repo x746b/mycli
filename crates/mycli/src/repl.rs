@@ -1395,6 +1395,9 @@ fn benchmark_script() -> Option<PathBuf> {
     if let Ok(exe) = std::env::current_exe() {
         if let Some(parent) = exe.parent() {
             candidates.push(parent.join("bench/bench.py"));
+            if let Some(prefix) = parent.parent() {
+                candidates.push(prefix.join("share/mycli/bench/bench.py"));
+            }
         }
     }
     candidates.push(

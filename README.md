@@ -632,9 +632,11 @@ collection of scripts:
 - when the benchmark exits, control returns to the existing MyCLI session.
 
 MyCLI locates `bench/bench.py` beside the installed binary or in the source
-tree. Packagers and custom installations can set `MYCLI_BENCH` to its path and
-`BENCH_PYTHON` to the desired Python 3 interpreter. No web application or
-additional service is required.
+tree, and also checks the standard `/usr/local/share/mycli/bench/bench.py`
+location for system-wide installations. Release archives bundle the complete
+`bench/` directory. Packagers and custom installations can set `MYCLI_BENCH` to
+its path and `BENCH_PYTHON` to the desired Python 3 interpreter. No web
+application or additional service is required.
 
 The Python entry point remains independently scriptable for automation, batch
 runs, and compatibility with existing `bench.sh` and `grade.sh` workflows.

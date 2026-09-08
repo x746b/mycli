@@ -109,6 +109,9 @@ jobs:
           file "dist/$package/mycli"
           test "$("dist/$package/mycli" --version)" = "mycli ${RELEASE_TAG#v}"
           cp README.md config.example.toml Cargo.lock "dist/$package/"
+          cp -R bench "dist/$package/bench"
+          test -x "dist/$package/bench/bench.py"
+          python3 "dist/$package/bench/bench.py" --help >/dev/null
           {
             printf 'Tag: %s\nCommit: %s\nTarget: %s\n' "$RELEASE_TAG" "$(git rev-parse HEAD)" "$BUILD_TARGET"
             rustc -vV
