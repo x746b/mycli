@@ -83,7 +83,7 @@ async fn main() -> anyhow::Result<()> {
     config::apply_cli_overrides(&cli, &mut cfg);
 
     if cli.show_config {
-        println!("{}", toml::to_string_pretty(&cfg)?);
+        println!("{}", toml::to_string_pretty(&cfg.redacted())?);
         return Ok(());
     }
 

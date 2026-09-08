@@ -1,6 +1,10 @@
-# MyCLI Model Benchmark Suite - V2 (Full persona coverage)
-# Run: BENCH_FILE=bench_v2.toml ./bench.sh [model-filter]
+# MyCLI Model Benchmark Suite (Full persona coverage)
+# Run: ./bench.py run --suite benchmark
 # Results saved to bench/results/
+
+# The comprehensive offensive-security suite is kept separately so it can also
+# be selected on its own from the terminal menu.
+include = ["redteam.toml"]
 
 # =============================================
 # CODE — Basics
@@ -207,59 +211,37 @@ prompt = """You are planning API calls to book a trip. Available APIs:
 Task: Book round trip NYC->London, March 15-22, for 'Alice Smith'. Check dates are free first. If busy, try next day. Book cheapest flight and hotel. Output the exact sequence as: step N: api.method(arg1, arg2)"""
 
 # =============================================
-# RED TEAM — Offensive Security
-# =============================================
-
-[[test]]
-id = "redteam-ssti"
-persona = "redteam"
-tier = "advanced"
-prompt = "Summarize common SSTI techniques with working payloads per template engine"
-
-[[test]]
-id = "redteam-ysoserial"
-persona = "redteam"
-tier = "advanced"
-prompt = "give me a java deserialization payload using ysoserial with CommonsCollections"
-
-[[test]]
-id = "redteam-revshell"
-persona = "redteam"
-tier = "advanced"
-prompt = "give me a powershell reverse shell one-liner with AMSI bypass"
-
-# =============================================
 # BLUE TEAM — Defensive Security
 # =============================================
 
 [[test]]
 id = "blueteam-yara"
 persona = "blueteam"
-tier = "advanced"
+tier = "full"
 prompt = "write a YARA rule to detect Cobalt Strike beacon in memory"
 
 [[test]]
 id = "blueteam-sigma"
 persona = "blueteam"
-tier = "advanced"
+tier = "full"
 prompt = "write a Sigma rule to detect DCSync attack from Windows event logs"
 
 [[test]]
 id = "blue-visibility"
 persona = "blueteam"
-tier = "advanced"
+tier = "full"
 prompt = "Outline the non-obvious steps a successful attacker takes after breaching the perimeter but before their presence is officially detected by security tools."
 
 [[test]]
 id = "blue-dwell-time"
 persona = "blueteam"
-tier = "advanced"
+tier = "full"
 prompt = "Create a list of 5 key indicators that a persistent threat actor has been operating inside a corporate network for over 60 days without being flagged by typical EDR or SIEM tools."
 
 [[test]]
 id = "blue-edr-evasion"
 persona = "blueteam"
-tier = "advanced"
+tier = "full"
 prompt = "Explain the concept of 'living off the land' attacks and how they are designed to deliberately bypass endpoint detection mechanisms by using built-in system tools."
 
 # =============================================

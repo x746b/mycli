@@ -26,6 +26,8 @@ use rustyline::{
 use std::borrow::Cow;
 use std::collections::HashSet;
 use std::io::{self, Write};
+use std::path::PathBuf;
+use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
@@ -289,8 +291,21 @@ impl MyHelper {
     fn new() -> Self {
         Self {
             commands: vec![
-                "/help", "/clear", "/model", "/models", "/cloud", "/tools", "/mcp", "/usage",
-                "/persona", "/thinking", "/reasoning", "/exit", "/quit",
+                "/help",
+                "/clear",
+                "/model",
+                "/models",
+                "/cloud",
+                "/bench",
+                "/grade",
+                "/tools",
+                "/mcp",
+                "/usage",
+                "/persona",
+                "/thinking",
+                "/reasoning",
+                "/exit",
+                "/quit",
             ]
                 .into_iter()
                 .map(String::from)
@@ -1366,6 +1381,42 @@ enum CommandResult {
     SwitchPersona(String),
     Thinking(String),
     Reasoning(String),
+    LaunchBenchmark(Vec<String>),
+}
+
+fn benchmark_script() -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os("MYCLI_BENCH") {
+        let path = PathBuf::from(path);
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+    let mut candidates = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            candidates.push(parent.join("bench/bench.py"));
+        }
+    }
+    candidates.push(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../bench/bench.py"),
+    );
+    candidates.into_iter().find(|path| path.is_file())
+}
+
+fn launch_benchmark(args: &[String], renderer: &mut Renderer) {
+    let Some(script) = benchmark_script() else {
+        renderer.error("Benchmark tool not found. Set MYCLI_BENCH to bench/bench.py.");
+        return;
+    };
+    let python = std::env::var("BENCH_PYTHON").unwrap_or_else(|_| "python3".into());
+    status::teardown();
+    let result = Command::new(&python).arg(&script).args(args).status();
+    status::setup();
+    match result {
+        Ok(status) if status.success() => {}
+        Ok(status) => renderer.error(&format!("benchmark exited with {status}")),
+        Err(error) => renderer.error(&format!("could not start {python}: {error}")),
+    }
 }
 
 fn handle_command(cmd: &str, args: &str, config: &Config, current_model: &str) -> CommandResult {
@@ -1378,6 +1429,8 @@ fn handle_command(cmd: &str, args: &str, config: &Config, current_model: &str) -
             eprintln!("  /cloud             Pick cloud provider and reasoning level");
             eprintln!("  /reasoning [level] Pick or set reasoning effort (default resets it)");
             eprintln!("  /cloud <name>      Switch to cloud (e.g. kimi, deepseek)");
+            eprintln!("  /bench             Open the benchmark menu");
+            eprintln!("  /grade             Pick a cloud grader and grade saved results");
             eprintln!("  /tools             Show active tool tier");
             eprintln!("  /tools <tier>      Switch tier (simple/medium/full)");
             eprintln!("  /mcp               Show MCP server status");
@@ -1446,6 +1499,18 @@ fn handle_command(cmd: &str, args: &str, config: &Config, current_model: &str) -
             } else {
                 CommandResult::SwitchCloud(args.trim().to_string())
             }
+        }
+        "bench" => {
+            let forwarded = args.split_whitespace().map(String::from).collect();
+            CommandResult::LaunchBenchmark(forwarded)
+        }
+        "grade" => {
+            let forwarded = if args.is_empty() {
+                vec!["grade-menu".into()]
+            } else {
+                vec!["grade".into(), "--provider".into(), args.trim().into()]
+            };
+            CommandResult::LaunchBenchmark(forwarded)
         }
         "tools" => {
             if args.is_empty() {
@@ -1931,6 +1996,7 @@ pub async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                     remember_reasoning(&mut config, effort);
                     renderer.notice(&format!("reasoning effort → {}", config.reasoning_effort.as_deref().unwrap_or("default")));
                 }
+                CommandResult::LaunchBenchmark(args) => launch_benchmark(&args, &mut renderer),
                 CommandResult::Continue => {}
             }
             status::set_reasoning(config.reasoning_effort.as_deref(), !is_local_provider(&config));

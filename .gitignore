@@ -1,6 +1,7 @@
 /target
 Cargo.lock
 bench/results/
+bench/__pycache__/
 /mycli
 /bin/
 /latex_test.md

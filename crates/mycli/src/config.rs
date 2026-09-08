@@ -197,6 +197,54 @@ impl Default for Config {
     }
 }
 
+fn sensitive_env_name(name: &str) -> bool {
+    let upper = name.to_ascii_uppercase();
+    [
+        "KEY",
+        "TOKEN",
+        "SECRET",
+        "PASSWORD",
+        "PASSWD",
+        "CREDENTIAL",
+        "AUTH",
+    ]
+    .iter()
+    .any(|marker| upper.contains(marker))
+}
+
+impl Config {
+    /// Return a display-safe copy for diagnostics. The live configuration is
+    /// left untouched so callers cannot accidentally replace usable secrets.
+    pub fn redacted(&self) -> Self {
+        let mut safe = self.clone();
+        if !safe.api_key.is_empty() {
+            safe.api_key = "<redacted>".into();
+        }
+        for profile in safe.cloud.values_mut() {
+            if !profile.api_key.is_empty() {
+                profile.api_key = "<redacted>".into();
+            }
+            if !profile.admin_key.is_empty() {
+                profile.admin_key = "<redacted>".into();
+            }
+        }
+        let redact_env = |entry: &mut McpEntry| {
+            for (name, value) in &mut entry.env {
+                if !value.is_empty() && sensitive_env_name(name) {
+                    *value = "<redacted>".into();
+                }
+            }
+        };
+        for entry in &mut safe.mcp {
+            redact_env(entry);
+        }
+        for entry in safe.mcp_servers.values_mut() {
+            redact_env(entry);
+        }
+        safe
+    }
+}
+
 /// Built-in presets for well-known providers (used when cloud profile
 /// doesn't specify base_url or model).
 struct BuiltinPreset {
@@ -424,6 +472,54 @@ mod mcp_config_tests {
         assert_eq!(config.model, "still-loaded");
         assert!(config.mcp_entries()[0].config_error().unwrap().contains("HTTP MCP"));
         assert!(config.mcp_entries()[1].config_error().unwrap().contains("disabled_tools"));
+    }
+}
+
+#[cfg(test)]
+mod redaction_tests {
+    use super::*;
+
+    #[test]
+    fn diagnostic_copy_redacts_keys_and_sensitive_mcp_environment() {
+        let mut config = Config {
+            api_key: "local-secret".into(),
+            ..Config::default()
+        };
+        config.cloud.insert(
+            "openai".into(),
+            CloudProfile {
+                api_key: "cloud-secret".into(),
+                admin_key: "admin-secret".into(),
+                ..CloudProfile::default()
+            },
+        );
+        config.mcp_servers.insert(
+            "lookup".into(),
+            McpEntry {
+                name: String::new(),
+                command: "lookup".into(),
+                args: vec![],
+                env: HashMap::from([
+                    ("NVD_API_KEY".into(), "nvd-secret".into()),
+                    ("CACHE_DIR".into(), "/tmp/cache".into()),
+                ]),
+                cwd: None,
+                enabled: true,
+                url: None,
+                extra: BTreeMap::new(),
+            },
+        );
+
+        let safe = config.redacted();
+        assert_eq!(safe.api_key, "<redacted>");
+        assert_eq!(safe.cloud["openai"].api_key, "<redacted>");
+        assert_eq!(safe.cloud["openai"].admin_key, "<redacted>");
+        assert_eq!(
+            safe.mcp_servers["lookup"].env["NVD_API_KEY"],
+            "<redacted>"
+        );
+        assert_eq!(safe.mcp_servers["lookup"].env["CACHE_DIR"], "/tmp/cache");
+        assert_eq!(config.api_key, "local-secret");
     }
 }
 

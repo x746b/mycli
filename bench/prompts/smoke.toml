@@ -1,4 +1,4 @@
-# MyCLI Model Benchmark Suite
+# MyCLI Model Benchmark Smoke Suite
 # Run: ./bench.sh [model-filter]
 # Results saved to bench/results/
 

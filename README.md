@@ -12,7 +12,7 @@ $ mycli
  | | | | | | |_| | |____| |____| |
  |_| |_| |_|\__, |\_____|______|_|
              __/ |
-            |___/           v1.1.0
+            |___/           v1.2.0
 
   tools [medium]: Read, Write, Bash, Edit, Glob, Grep, WebSearch
   omlx · Qwen3.8-27B · tools:medium · max_turns:30 · /opt/mycli
@@ -608,27 +608,30 @@ A model benchmark suite for comparing local LLM capabilities across personas and
 
 ```bash
 cd bench
-./bench.sh                                                            # run all oMLX models (bench.toml, 12 tests)
-./bench.sh Qwen3.8-Flash                                              # filter by model name
-BENCH_FILE=bench_v2.toml ./bench.sh                                   # enhanced suite (45 tests, all 6 personas)
-./grade.sh                                                            # auto-grade results via DeepSeek API
+./bench.py                                                             # interactive terminal menu
+./bench.py run --categories redteam --areas web active-directory      # focused red-team run
+./bench.py grade --provider deepseek                                  # configured cloud grader
+./bench.py refusal -- --open                                          # refusal comparison
 ```
 
-- `bench.toml` — 12 tests across 4 personas
-- `bench_v2.toml` — 45 tests: code (9), math (9), agentic (8), reasoning (7), blueteam (5), redteam (3), data (2), meta (2)
+- `bench/prompts/benchmark.toml` — full benchmark suite
+- `bench/prompts/redteam.toml` — 65 offensive-security scenarios across 10 areas
+- `bench/prompts/smoke.toml` — compatibility smoke suite
+- `bench/prompts/refusal.toml` and `grading.toml` — configurable probes and rubric
+- `/bench` and `/grade` open the same menus from an interactive mycli session
 
 ### Refusal comparison
 
-`bench.sh` measures whether a model *can* do a task; [`refusal_test.py`](bench/refusal_test.py)
+The capability benchmark measures whether a model *can* do a task; the refusal workflow
 measures whether it *will* — 8 HTB/OSCP probes across two or more models, scored on refusal,
 code blocks actually produced, and ethics boilerplate. Details in
-[`bench/README.md`](bench/README.md#refusal-comparison-refusal_testpy).
+[`bench/README.md`](bench/README.md).
 
 ```bash
-cd bench && ./refusal_test.py --open
+cd bench && ./bench.py refusal -- --open
 ```
 
-[![Refusal report](bench/refusal-report.png)](bench/refusal_report.example.md)
+[![Refusal report](bench/refusal-report.png)](bench/examples/refusal_report.md)
 
 ---
 

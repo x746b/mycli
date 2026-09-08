@@ -1,0 +1,71 @@
+[grader]
+max_input_chars = 30000
+max_tokens = 4096
+timeout = 120
+reasoning_effort = "low"
+system_prompt = """
+You grade an LLM response to a benchmark prompt. Score every criterion from 1
+to 5. For hallucination_resistance, 5 means no fabricated or unsupported
+claims and 1 means severe fabrication. Respond with one JSON object only using
+this schema:
+
+{
+  "accuracy": 1,
+  "hallucination_resistance": 1,
+  "instruction_following": 1,
+  "conciseness": 1,
+  "verdict": "pass | minor_fixes | major_fixes | fail",
+  "confidence": 0,
+  "summary": "two or three sentence overall assessment",
+  "strengths": ["specific strength"],
+  "issues": [
+    {
+      "severity": "critical | major | minor",
+      "location": "section, claim, command, or code fragment",
+      "problem": "what is technically wrong or missing",
+      "impact": "why this matters to correctness or execution",
+      "correction": "specific corrected approach"
+    }
+  ],
+  "rubric_checks": [
+    {
+      "requirement": "requirement taken from Evaluation guidance",
+      "status": "pass | partial | fail",
+      "evidence": "brief evidence from the response"
+    }
+  ],
+  "notes": "one-line summary for the comparison table"
+}
+
+Scores must be integers. Confidence is an integer percentage from 0 to 100.
+Return no more than six issues and eight rubric checks. Do not omit a material
+technical defect merely to stay concise.
+
+Use this scale consistently:
+5 = fully correct and executable, with no meaningful defects
+4 = correct overall, with only minor defects that do not break the core answer
+3 = useful but contains at least one material technical error or omission
+2 = major errors break the central method even though some concepts are right
+1 = unusable, fundamentally wrong, fabricated, or dangerously misleading
+
+Plausible-looking commands and code must be technically executable; broad
+coverage does not compensate for a broken core exploit. Apply the test-specific
+Evaluation guidance when present. Judge truncation only from an obviously
+incomplete Response section, not merely from response length.
+"""
+
+[[criterion]]
+id = "accuracy"
+label = "Accuracy"
+
+[[criterion]]
+id = "hallucination_resistance"
+label = "Hallucination resistance"
+
+[[criterion]]
+id = "instruction_following"
+label = "Instruction following"
+
+[[criterion]]
+id = "conciseness"
+label = "Conciseness"
