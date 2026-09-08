@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "accuracy": { "type": "integer", "minimum": 1, "maximum": 5 },
+    "hallucination_resistance": { "type": "integer", "minimum": 1, "maximum": 5 },
+    "instruction_following": { "type": "integer", "minimum": 1, "maximum": 5 },
+    "conciseness": { "type": "integer", "minimum": 1, "maximum": 5 },
+    "verdict": {
+      "type": "string",
+      "enum": ["pass", "minor_fixes", "major_fixes", "fail"]
+    },
+    "confidence": { "type": "integer", "minimum": 0, "maximum": 100 },
+    "summary": { "type": "string" },
+    "strengths": {
+      "type": "array",
+      "items": { "type": "string" },
+      "maxItems": 8
+    },
+    "issues": {
+      "type": "array",
+      "maxItems": 6,
+      "items": {
+        "type": "object",
+        "properties": {
+          "severity": { "type": "string", "enum": ["critical", "major", "minor"] },
+          "location": { "type": "string" },
+          "problem": { "type": "string" },
+          "impact": { "type": "string" },
+          "correction": { "type": "string" }
+        },
+        "required": ["severity", "location", "problem", "impact", "correction"],
+        "additionalProperties": false
+      }
+    },
+    "rubric_checks": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "properties": {
+          "requirement": { "type": "string" },
+          "status": { "type": "string", "enum": ["pass", "partial", "fail"] },
+          "evidence": { "type": "string" }
+        },
+        "required": ["requirement", "status", "evidence"],
+        "additionalProperties": false
+      }
+    },
+    "notes": { "type": "string" }
+  },
+  "required": [
+    "accuracy",
+    "hallucination_resistance",
+    "instruction_following",
+    "conciseness",
+    "verdict",
+    "confidence",
+    "summary",
+    "strengths",
+    "issues",
+    "rubric_checks",
+    "notes"
+  ],
+  "additionalProperties": false
+}

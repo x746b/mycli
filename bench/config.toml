@@ -1,0 +1,9 @@
+[[model_exclusion]]
+id = "Vontra_GLM-5.3-Flash-MLX-oQ2-MTP"
+reason = "Incompatible with public oMLX builds; tracked by jundot/omlx#3380."
+
+[codex_grader]
+model = "gpt-daybreak-blue-latest"
+reasoning_effort = "high"
+timeout = 600
+home = "~/.codex-bench"

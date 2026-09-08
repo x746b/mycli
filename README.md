@@ -1,6 +1,6 @@
 # MyCLI
 
-Lightweight AI coding CLI for testing LLM capabilities — especially local models running on [oMLX](https://github.com/jundot/omlx). Cloud providers (Kimi, DeepSeek, Gemini, OpenAI) supported as first-class fallback.
+Lightweight AI coding CLI for testing LLM capabilities — especially local models running on [oMLX](https://github.com/jundot/omlx). Cloud providers (Kimi, DeepSeek, Gemini, OpenAI) are supported as first-class fallbacks, and v1.2.0 includes terminal-native cybersecurity benchmarking with structured cloud or Codex grading.
 
 Screen:
 ```bash
@@ -76,7 +76,7 @@ mycli -t simple -m RedSage-Qwen3-8B-DPO
 mycli -p redteam -t full -m orcarouter_Qwen3.8-27B-Uncensored-8B "cybersec prompt"    
 ```
 
-** ~ 5MB static binary** | **Rust** | **32 tools** | **3 tool tiers** | **6 personas** | **MCP support** | **Hot-swappable models & providers**
+**~5MB static binary** | **Rust** | **32 tools** | **3 tool tiers** | **6 personas** | **MCP support** | **Cybersecurity benchmarks** | **Hot-swappable models & providers**
 
 ---
 
@@ -88,6 +88,7 @@ Small local LLMs (7B–30B) can chat well but struggle with structured tool call
 - Hot-switching between local and cloud models mid-conversation
 - Tolerating the edit mistakes small models make, instead of failing the edit
 - Keeping the system prompt lean and tier-appropriate — small models only see tools they can use
+- Running focused capability and refusal benchmarks, then grading full responses with a configured cloud model or ChatGPT-authenticated Codex
 
 ---
 
@@ -200,7 +201,7 @@ mycli --cloud deepseek -y "refactor main.rs"   # auto-approve tools
 | `--no-thinking` | Start with reasoning off — at the model level where the server supports it |
 | `--max-turns` | Max agent turns per prompt (default: 30) |
 | `-C, --directory` | Working directory |
-| `--show-config` | Print resolved config and exit |
+| `--show-config` | Print resolved config with API keys and sensitive MCP environment values redacted, then exit |
 | `--version` | Print version and exit |
 
 ---
@@ -221,6 +222,8 @@ mycli --cloud deepseek -y "refactor main.rs"   # auto-approve tools
 | `/usage` | Show cloud balances / spend (Kimi, DeepSeek, OpenAI) |
 | `/mcp` | Show each MCP server's status — tools discovered, or why it failed |
 | `/mcp verbose` | List every discovered MCP tool, grouped by server |
+| `/bench` | Open the benchmark menu: capability tests, refusal comparison, grading, and local-model listing |
+| `/grade` | Select and grade saved benchmark results with a configured cloud provider or Codex |
 | `/thinking [on\|off]` | Turn reasoning on or off **at the model level** (see below) |
 | `/thinking last` | Reprint the last reasoning block |
 | `/clear` | Clear screen |
@@ -604,21 +607,102 @@ settings does not change or automatically load your Codex configuration.
 
 ## Benchmarking
 
-A model benchmark suite for comparing local LLM capabilities across personas and tasks. See [`bench/README.md`](bench/README.md) for details.
+MyCLI 1.2.0 includes a terminal-native benchmark suite for comparing local
+models without a web interface. It separates three useful questions:
+
+- **Capability:** can the model solve the task accurately and follow its output constraints?
+- **Refusal:** will the model engage with an authorized security task, and how much boilerplate does it add?
+- **Quality:** how does an independent grader score accuracy, hallucination resistance, instruction following, and conciseness?
+
+From an interactive MyCLI session, `/bench` opens the complete workflow and
+`/grade` jumps directly to saved-result grading. The picker supports arrow-key
+navigation, Space to toggle an item, `a` to select or clear all, Enter to
+confirm, and Esc to cancel.
+
+### Built into MyCLI
+
+Benchmarking is integrated into the Rust REPL rather than being only a separate
+collection of scripts:
+
+- `/bench` launches the bundled terminal frontend for benchmark runs, refusal
+  comparison, grading, and local-model discovery;
+- `/grade` launches the result and grader selectors directly;
+- both commands reuse the same oMLX endpoint and `[cloud.<provider>]` profiles
+  as the main MyCLI configuration;
+- when the benchmark exits, control returns to the existing MyCLI session.
+
+MyCLI locates `bench/bench.py` beside the installed binary or in the source
+tree. Packagers and custom installations can set `MYCLI_BENCH` to its path and
+`BENCH_PYTHON` to the desired Python 3 interpreter. No web application or
+additional service is required.
+
+The Python entry point remains independently scriptable for automation, batch
+runs, and compatibility with existing `bench.sh` and `grade.sh` workflows.
+
+### Focused benchmark runs
+
+Choose one or more local models, then narrow the run by suite, category, area,
+and individual test. This makes it practical to run only, for example, Linux
+privilege escalation and exploit-development cases instead of the entire suite.
+
+The dedicated red-team suite currently contains **65 synthetic scenarios across
+10 areas**: methodology, reconnaissance, web, Linux privilege escalation,
+Windows privilege escalation, Active Directory, pivoting, exploit development,
+cloud/containers, and operations. Scenarios are structured around OWASP WSTG,
+MITRE ATT&CK, and NIST SP 800-115 methodology, with additional scenario diversity
+informed by the local command-vault corpus.
 
 ```bash
 cd bench
-./bench.py                                                             # interactive terminal menu
-./bench.py run --categories redteam --areas web active-directory      # focused red-team run
-./bench.py grade --provider deepseek                                  # configured cloud grader
-./bench.py refusal -- --open                                          # refusal comparison
+./bench.py                                                        # interactive terminal menu
+./bench.py list                                                   # list benchmarkable oMLX models
+./bench.py run --models RavenX --suite redteam \
+  --categories redteam --areas exploit-development --timeout 180
+./bench.py run --tests 'redteam-linux-*' --failed                 # retry missing/failed cases
+./bench.py refusal -- --models model-a model-b --open             # refusal comparison
 ```
 
-- `bench/prompts/benchmark.toml` — full benchmark suite
-- `bench/prompts/redteam.toml` — 65 offensive-security scenarios across 10 areas
-- `bench/prompts/smoke.toml` — compatibility smoke suite
-- `bench/prompts/refusal.toml` and `grading.toml` — configurable probes and rubric
-- `/bench` and `/grade` open the same menus from an interactive mycli session
+Prompts, personas, tool tiers, timeouts, rubrics, refusal markers, and suite
+composition live in external TOML files under `bench/prompts/`; adding or
+changing tests does not require modifying Python or Rust code. Model exclusions
+and Codex-grader defaults live in `bench/config.toml`.
+
+### Structured grading
+
+`/grade` reads the API-backed profiles already configured under
+`[cloud.<provider>]` in `~/.mycli/config.toml`. The special `codex` provider
+instead runs `codex exec --ephemeral` using a ChatGPT login, so it does not need
+an OpenAI API key. API-key environment variables are removed from the grader
+subprocess to prevent an accidental switch to metered API authentication.
+
+Set up the isolated grader login once:
+
+```bash
+install -d -m 700 ~/.codex-bench
+CODEX_HOME=~/.codex-bench codex login --device-auth
+```
+
+The dedicated home avoids refresh-token races with interactive Codex sessions.
+Before grading, MyCLI performs a small live authentication check and fails fast
+if the saved session needs to be renewed.
+
+```bash
+cd bench
+./bench.py grade --provider deepseek
+./bench.py grade --provider codex --grader-model gpt-daybreak-blue-latest
+```
+
+The generated `bench/results/graded.md` includes:
+
+- a compact score table and per-model averages;
+- verdicts, confidence, strengths, and severity-ranked issues;
+- suggested corrections and per-rubric pass/partial/fail checks;
+- the complete model response alongside its evaluation;
+- links to the raw structured grader output under `results/_grader/`.
+
+Grading uses `bench/schemas/grading.schema.json` for stable machine-readable
+output. Saved capability responses and reports remain local under the ignored
+`bench/results/` directory.
 
 ### Refusal comparison
 
@@ -632,6 +716,10 @@ cd bench && ./bench.py refusal -- --open
 ```
 
 [![Refusal report](bench/refusal-report.png)](bench/examples/refusal_report.md)
+
+The original `bench.sh` and `grade.sh` entry points remain available as
+compatibility wrappers. See [`bench/README.md`](bench/README.md) for every CLI
+option, prompt format, configuration override, and generated file.
 
 ---
 

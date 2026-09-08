@@ -23,6 +23,7 @@ mycli through `/bench`; `/grade` opens cloud-grader selection directly.
 ./bench.py run --tests 'redteam-*' 'math-*' --timeout 180
 ./bench.py run --failed
 ./bench.py grade --provider deepseek
+./bench.py grade --provider codex --grader-model gpt-daybreak-blue-latest
 ./bench.py refusal -- --models model-a model-b --open
 ```
 
@@ -35,6 +36,8 @@ wrappers. `bench.sh` defaults to the original smoke suite. Set
 ```text
 bench/
 ├── bench.py                 unified frontend and capability/grading engine
+├── config.toml              benchmark model exclusions
+├── schemas/                 structured grader output schemas
 ├── bench.sh                 legacy compatibility wrapper
 ├── grade.sh                 legacy compatibility wrapper
 ├── refusal_test.py          refusal runner and HTML/Markdown renderer
@@ -87,6 +90,19 @@ The grader picker reads named `[cloud.<provider>]` profiles from
 never printed or copied into reports. The provider must offer an
 OpenAI-compatible `/chat/completions` endpoint.
 
+The special `codex` provider invokes `codex exec --ephemeral` with the saved
+ChatGPT login, a read-only sandbox, tools disabled, and the JSON Schema in
+`schemas/grading.schema.json`. It removes API-key environment variables from
+the subprocess so it cannot silently switch to usage-billed API-key auth. A
+small live preflight checks that the cached login can still refresh before any
+result is graded. The default `CODEX_HOME` is the dedicated `~/.codex-bench`,
+which avoids refresh-token races with an interactive Codex session. Authenticate
+it once with `install -d -m 700 ~/.codex-bench`, followed by
+`CODEX_HOME=~/.codex-bench codex login`; on a headless machine, add
+`--device-auth`. The grader also creates a missing home before its login check.
+Override the location with `BENCH_CODEX_HOME` or
+`codex_grader.home` in `config.toml`.
+
 The generated `results/graded.md` records the exact provider and model used.
 It keeps the compact score table and averages, then adds collapsible detailed
 validation with strengths, severity-ranked issues, suggested corrections, and
@@ -103,3 +119,7 @@ validators can be added independently of the cloud judge.
 - `MYCLI_BENCH`: benchmark script path used by the Rust `/bench` launcher
 - `REFUSAL_PROMPTS`: alternate refusal prompt TOML
 - `BENCH_GRADER`: provider used by the legacy `grade.sh` wrapper
+- `BENCH_CODEX_HOME`: credential/config home used only by the Codex grader
+
+Models listed in `config.toml` are hidden from benchmark selection. Use
+`./bench.py list --all` to include them when diagnosing model availability.
