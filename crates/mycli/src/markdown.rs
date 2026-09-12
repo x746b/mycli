@@ -94,8 +94,12 @@ fn render_code(code: &str, language: &str, width: usize) -> String {
     let mut highlight = HighlightLines::new(syntax, &THEMES.themes["base16-ocean.dark"]);
     let color = std::env::var_os("NO_COLOR").is_none() && std::env::var("TERM").as_deref() != Ok("dumb");
     let inner = width.saturating_sub(4).max(2);
-    let label = crate::ui::truncate(&language.chars().filter(|c| !c.is_control()).collect::<String>(), inner);
-    let mut out = format!("╭─ {}{}╮\n", label, "─".repeat(inner.saturating_sub(crate::ui::display_width(&label))));
+    let label = crate::ui::truncate(&language.chars().filter(|c| !c.is_control()).collect::<String>(), inner.saturating_sub(1));
+    let mut out = if label.is_empty() {
+        format!("╭{}╮\n", "─".repeat(inner + 2))
+    } else {
+        format!("╭─ {} {}╮\n", label, "─".repeat(inner.saturating_sub(crate::ui::display_width(&label) + 1)))
+    };
     // Code never passes through math/table repair. Only terminal controls are escaped.
     let code: String = code.chars().map(|c| if c.is_control() && c != '\n' && c != '\t' { '�' } else { c }).collect();
     for line in code.split_inclusive('\n') {
