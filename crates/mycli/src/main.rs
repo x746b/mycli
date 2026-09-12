@@ -77,6 +77,7 @@ pub struct Cli {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let _output_cleanup = cersei_tools::output::ArchiveCleanup;
     let cli = Cli::parse();
 
     let mut cfg = config::load();

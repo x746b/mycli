@@ -13,72 +13,63 @@ use tokio::sync::mpsc;
 
 // ─── Tool result budget ──────────────────────────────────────────────────────
 
-/// Truncate oldest tool results when cumulative size exceeds budget.
-/// Modifies messages in place.
-pub fn apply_tool_result_budget(messages: &mut [Message], budget_chars: usize) {
-    // Collect total tool result size
-    let total: usize = messages
-        .iter()
-        .flat_map(|m| match &m.content {
-            MessageContent::Blocks(blocks) => blocks
-                .iter()
-                .filter_map(|b| {
-                    if let ContentBlock::ToolResult { content, .. } = b {
-                        Some(match content {
-                            ToolResultContent::Text(t) => t.len(),
-                            ToolResultContent::Blocks(b) => b
-                                .iter()
-                                .map(|bb| {
-                                    if let ContentBlock::Text { text } = bb {
-                                        text.len()
-                                    } else {
-                                        0
-                                    }
-                                })
-                                .sum(),
-                        })
-                    } else {
-                        None
-                    }
-                })
-                .collect::<Vec<_>>(),
-            _ => vec![],
-        })
-        .sum();
-
-    if total <= budget_chars {
-        return;
-    }
-
-    // Truncate oldest tool results first (skip the last KEEP_RECENT messages)
-    let keep_recent = 6; // don't touch recent tool results
-    let truncatable_end = messages.len().saturating_sub(keep_recent);
-    let mut freed = 0usize;
-    let target_free = total - budget_chars;
-
-    for msg in messages[..truncatable_end].iter_mut() {
-        if freed >= target_free {
-            break;
-        }
-        if let MessageContent::Blocks(blocks) = &mut msg.content {
-            for block in blocks.iter_mut() {
-                if freed >= target_free {
-                    break;
-                }
+/// Bound all tool results, including the newest batch, preserving call/result IDs.
+pub fn apply_tool_result_budget(messages: &mut [Message], budget_bytes: usize) {
+    let mut remaining = budget_bytes;
+    for message in messages.iter_mut().rev() {
+        if let MessageContent::Blocks(blocks) = &mut message.content {
+            let count = blocks.iter().filter(|b| matches!(b, ContentBlock::ToolResult { .. })).count();
+            let allowance = remaining.checked_div(count).unwrap_or(0).min(cersei_tools::output::MODEL_OUTPUT_BYTES);
+            for block in blocks {
                 if let ContentBlock::ToolResult { content, .. } = block {
-                    let size = match content {
-                        ToolResultContent::Text(t) => t.len(),
-                        ToolResultContent::Blocks(_) => 100,
+                    let text = match content {
+                        ToolResultContent::Text(text) => text.clone(),
+                        ToolResultContent::Blocks(blocks) => serde_json::to_string(blocks).unwrap_or_default(),
                     };
-                    if size > 200 {
-                        freed += size;
-                        *content = ToolResultContent::Text(
-                            "[truncated — re-read file if needed]".to_string(),
-                        );
-                    }
+                    let bounded = cersei_tools::output::excerpt(&text, allowance);
+                    remaining = remaining.saturating_sub(bounded.len());
+                    *content = ToolResultContent::Text(bounded);
                 }
             }
         }
+    }
+}
+
+/// Conservative byte-based input accounting, including schemas and system prompt.
+/// Provider tokenizers differ; use one token per serialized UTF-8 byte plus
+/// framing headroom instead of the unsafe prose-only chars/4 heuristic.
+fn input_size(messages: &[Message], tools: &[ToolDefinition], system: Option<&str>) -> usize {
+    serde_json::to_vec(&(messages, tools, system)).map(|v| v.len()).unwrap_or(usize::MAX)
+}
+
+pub(crate) fn fit_request(messages: &mut [Message], tools: &[ToolDefinition], system: Option<&str>,
+    window: u64, max_output: u32) -> Result<()> {
+    let budget = window.saturating_sub(max_output as u64).saturating_sub(1024) as usize;
+    // Measure non-result overhead, then allocate the available space to results.
+    let mut overhead = messages.to_vec();
+    apply_tool_result_budget(&mut overhead, 0);
+    let available = budget.saturating_sub(input_size(&overhead, tools, system));
+    let mut allowance = available;
+    apply_tool_result_budget(messages, allowance);
+    let mut size = input_size(messages, tools, system);
+    while size > budget && allowance > 0 {
+        allowance /= 2;
+        apply_tool_result_budget(messages, allowance);
+        size = input_size(messages, tools, system);
+    }
+    if size > budget {
+        return Err(CerseiError::Config(format!(
+            "Input exceeds conservative context budget ({size} bytes, {budget} available after reserving {max_output} output tokens and framing). Shorten the prompt, start a new session, reduce max_tokens, or configure the model's actual context_window. No request sent."
+        )));
+    }
+    Ok(())
+}
+
+async fn execute_cancellable(tool: &dyn cersei_tools::Tool, input: serde_json::Value,
+    ctx: &ToolContext, cancel: &tokio_util::sync::CancellationToken) -> ToolResult {
+    tokio::select! {
+        _ = cancel.cancelled() => ToolResult::error("Tool execution cancelled"),
+        result = tool.execute(input, ctx) => result,
     }
 }
 
@@ -207,8 +198,11 @@ pub async fn run_agent_streaming(
         }
 
         // Build completion request
-        let messages = agent.messages.lock().clone();
+        let mut messages = agent.messages.lock().clone();
         let tool_defs: Vec<ToolDefinition> = agent.tools.iter().map(|t| t.to_definition()).collect();
+
+        apply_tool_result_budget(&mut messages, agent.tool_result_budget);
+        fit_request(&mut messages, &tool_defs, agent.system_prompt.as_deref(), agent.context_window, agent.max_tokens)?;
 
         let model = agent
             .model
@@ -420,9 +414,9 @@ pub async fn run_agent_streaming(
                                         ToolResult::error(format!("Blocked by hook: {}", reason))
                                     }
                                     HookAction::ModifyInput(new_input) => {
-                                        tool.execute(new_input, &tool_ctx).await
+                                        execute_cancellable(tool.as_ref(), new_input, &tool_ctx, &agent.cancel_token).await
                                     }
-                                    _ => tool.execute(tool_input.clone(), &tool_ctx).await,
+                                    _ => execute_cancellable(tool.as_ref(), tool_input.clone(), &tool_ctx, &agent.cancel_token).await,
                                 }
                             }
                             PermissionDecision::Deny(reason) => {
@@ -433,6 +427,8 @@ pub async fn run_agent_streaming(
                         ToolResult::error(format!("Unknown tool: {}", tool_name))
                     };
 
+                    let mut result = result;
+                    result.content = cersei_tools::output::excerpt(&result.content, cersei_tools::output::MODEL_OUTPUT_BYTES);
                     let duration = start.elapsed();
 
                     let _ = event_tx
@@ -523,4 +519,42 @@ pub async fn run_agent_streaming(
     }
 
     Ok(output)
+}
+
+#[cfg(test)]
+mod output_budget_tests {
+    use super::*;
+    fn results(n: usize, text: &str) -> Vec<Message> {
+        vec![Message::user_blocks((0..n).map(|i| ContentBlock::ToolResult {
+            tool_use_id: i.to_string(), content: ToolResultContent::Text(text.into()), is_error: Some(false),
+        }).collect())]
+    }
+    #[test]
+    fn newest_batch_shares_budget_and_keeps_ids() {
+        let mut messages = results(5, &"🦀".repeat(10000));
+        apply_tool_result_budget(&mut messages, 1000);
+        let blocks = messages[0].content_blocks();
+        let mut bytes = 0;
+        for (i, block) in blocks.iter().enumerate() {
+            if let ContentBlock::ToolResult { tool_use_id, content: ToolResultContent::Text(text), .. } = block {
+                assert_eq!(*tool_use_id, i.to_string()); bytes += text.len();
+            } else { panic!("lost result"); }
+        }
+        assert!(bytes <= 1000);
+    }
+    #[test]
+    fn request_accounts_for_escaping_and_output_reserve() {
+        let mut messages = results(4, &"\u{0001}".repeat(10000));
+        fit_request(&mut messages, &[], Some("system"), 8192, 2048).unwrap();
+        assert!(input_size(&messages, &[], Some("system")) <= 8192 - 2048 - 1024);
+    }
+    #[test]
+    fn rejects_large_user_input_or_schemas_without_dropping_them() {
+        let mut messages = vec![Message::user("x".repeat(10000))];
+        assert!(fit_request(&mut messages, &[], None, 8192, 2048).is_err());
+        assert_eq!(messages[0].get_all_text().len(), 10000);
+        let tools = vec![ToolDefinition { name: "test".into(), description: "x".repeat(10000), input_schema: serde_json::json!({}) }];
+        assert!(fit_request(&mut [], &tools, None, 8192, 2048).is_err());
+        assert!(fit_request(&mut [], &[], None, 1024, 2048).is_err());
+    }
 }

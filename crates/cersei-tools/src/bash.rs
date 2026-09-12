@@ -62,23 +62,39 @@ impl Tool for BashTool {
             .current_dir(&cwd)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        #[cfg(unix)]
+        cmd.process_group(0);
 
         for (k, v) in &env_vars {
             cmd.env(k, v);
         }
 
+        let mut stdout = match output::Capture::new() {
+            Ok(c) => c, Err(e) => return ToolResult::error(format!("Output capture: {e}")),
+        };
+        let mut stderr = match output::Capture::new() {
+            Ok(c) => c, Err(e) => return ToolResult::error(format!("Output capture: {e}")),
+        };
+        let mut child = match cmd.spawn() {
+            Ok(c) => c, Err(e) => return ToolResult::error(format!("Failed to execute: {e}")),
+        };
+        // Kill the process group on completion, timeout, or cancellation, including
+        // descendants holding the output pipes open.
+        let _group = ProcessGroup(child.id());
+        let out_pipe = child.stdout.take().unwrap();
+        let err_pipe = child.stderr.take().unwrap();
         let result = tokio::time::timeout(
             std::time::Duration::from_millis(timeout_ms),
-            cmd.output(),
-        )
-        .await;
-
-        match result {
-            Ok(Ok(output)) => {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                let stderr = String::from_utf8_lossy(&output.stderr);
-
+            async { tokio::try_join!(child.wait(), stdout.drain(out_pipe), stderr.drain(err_pipe)) },
+        ).await;
+        let content = format!("{}{}{}", stdout.text(), if stderr.total > 0 { "\n" } else { "" }, stderr.text());
+        let metadata = serde_json::json!({"output_files": [stdout.path, stderr.path],
+            "output_bytes": stdout.total + stderr.total,
+            "archive_truncated": stdout.total > output::ARCHIVE_BYTES as u64 || stderr.total > output::ARCHIVE_BYTES as u64});
+        let result = match result {
+            Ok(Ok((status, (), ()))) => {
                 // Update shell state for cd commands
                 if input.command.trim().starts_with("cd ") {
                     let dir = input.command.trim().strip_prefix("cd ").unwrap().trim();
@@ -92,25 +108,14 @@ impl Tool for BashTool {
                     }
                 }
 
-                let mut content = String::new();
-                if !stdout.is_empty() {
-                    content.push_str(&stdout);
-                }
-                if !stderr.is_empty() {
-                    if !content.is_empty() {
-                        content.push('\n');
-                    }
-                    content.push_str(&stderr);
-                }
-
-                if output.status.success() {
+                if status.success() {
                     if content.is_empty() {
                         ToolResult::success("(Bash completed with no output)")
                     } else {
                         ToolResult::success(content)
                     }
                 } else {
-                    let code = output.status.code().unwrap_or(-1);
+                    let code = status.code().unwrap_or(-1);
                     ToolResult::error(format!(
                         "Exit code {}\n{}",
                         code,
@@ -120,9 +125,50 @@ impl Tool for BashTool {
             }
             Ok(Err(e)) => ToolResult::error(format!("Failed to execute: {}", e)),
             Err(_) => ToolResult::error(format!(
-                "Command timed out after {}ms",
-                timeout_ms
+                "Command timed out after {}ms\n{}",
+                timeout_ms, content
             )),
+        };
+        result.with_metadata(metadata)
+    }
+}
+
+struct ProcessGroup(Option<u32>);
+impl Drop for ProcessGroup {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        if let Some(pid) = self.0 {
+            let _ = nix::sys::signal::killpg(nix::unistd::Pid::from_raw(pid as i32), nix::sys::signal::Signal::SIGKILL);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn context() -> ToolContext {
+        ToolContext { working_dir: "/tmp".into(), session_id: uuid::Uuid::new_v4().to_string(),
+            permissions: std::sync::Arc::new(permissions::AllowAll),
+            cost_tracker: std::sync::Arc::new(CostTracker::new()), mcp_manager: None,
+            extensions: Extensions::default() }
+    }
+    #[tokio::test]
+    async fn captures_both_streams_and_nonzero_status() {
+        let result = BashTool.execute(serde_json::json!({"command":"printf 'hello'; printf 'error' >&2; exit 7"}), &context()).await;
+        assert!(result.is_error);
+        assert!(result.content.contains("Exit code 7") && result.content.contains("hello\nerror"));
+    }
+    #[tokio::test]
+    async fn timeout_returns_partial_output_and_stops_descendants() {
+        let result = BashTool.execute(serde_json::json!({"command":"printf 'started'; sleep 20 & wait", "timeout": 100}), &context()).await;
+        assert!(result.is_error && result.content.contains("timed out"));
+        assert!(result.content.contains("started"));
+    }
+    #[tokio::test]
+    async fn large_stdout_and_stderr_do_not_deadlock() {
+        let result = BashTool.execute(serde_json::json!({"command":"head -c 1000000 /dev/zero; head -c 1000000 /dev/zero >&2", "timeout": 5000}), &context()).await;
+        assert!(!result.is_error);
+        assert!(result.content.len() < 34000);
+        assert_eq!(result.metadata.unwrap()["output_bytes"], 2000000);
     }
 }

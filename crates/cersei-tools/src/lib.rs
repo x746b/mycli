@@ -13,6 +13,7 @@ pub mod file_write;
 pub mod glob_tool;
 pub mod grep_tool;
 pub mod notebook_edit;
+pub mod output;
 pub mod permissions;
 pub mod tool_primitives;
 pub mod plan_mode;

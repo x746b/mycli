@@ -354,6 +354,14 @@ pub async fn compact_conversation(
     keep_recent: usize,
     custom_instructions: Option<&str>,
 ) -> Result<CompactResult> {
+    compact_with_window(provider, messages, model, keep_recent, custom_instructions,
+        context_window_for_model(model)).await
+}
+
+async fn compact_with_window(
+    provider: &dyn Provider, messages: &[Message], model: &str, keep_recent: usize,
+    custom_instructions: Option<&str>, context_window: u64,
+) -> Result<CompactResult> {
     let messages_before = messages.len();
 
     if messages.len() <= keep_recent {
@@ -394,8 +402,10 @@ pub async fn compact_conversation(
         .collect::<Vec<_>>()
         .join("\n\n");
 
+    let old_text = cersei_tools::output::excerpt(&old_text,
+        context_window.saturating_sub(4096 + 2048) as usize / 6);
     let compact_prompt = get_compact_prompt(custom_instructions);
-    let request = cersei_provider::CompletionRequest {
+    let mut request = cersei_provider::CompletionRequest {
         model: model.to_string(),
         messages: vec![
             Message::user(format!(
@@ -411,6 +421,8 @@ pub async fn compact_conversation(
         options: cersei_provider::ProviderOptions::default(),
     };
 
+    crate::runner::fit_request(&mut request.messages, &request.tools, request.system.as_deref(),
+        context_window, request.max_tokens)?;
     let response = provider.complete_blocking(request).await?;
     let summary_text = response.message.get_all_text();
     let formatted_summary = format_compact_summary(&summary_text);
@@ -462,7 +474,7 @@ pub async fn auto_compact_if_needed(
         return None;
     }
 
-    match compact_conversation(provider, messages, model, KEEP_RECENT_MESSAGES, None).await {
+    match compact_with_window(provider, messages, model, KEEP_RECENT_MESSAGES, None, context_limit).await {
         // A run that could not find a safe boundary changed nothing; treat it
         // as "not needed" rather than a success, so the next turn tries again.
         Ok(result) if result.messages.is_empty() => None,

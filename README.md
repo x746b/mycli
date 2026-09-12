@@ -1,6 +1,6 @@
 # MyCLI
 
-Lightweight AI coding CLI for testing LLM capabilities — especially local models running on [oMLX](https://github.com/jundot/omlx). Cloud providers (Kimi, DeepSeek, Gemini, OpenAI) are supported as first-class fallbacks, and v1.2.0 includes terminal-native cybersecurity benchmarking with structured cloud or Codex grading.
+Lightweight AI coding CLI for testing LLM capabilities — especially local models running on [oMLX](https://github.com/jundot/omlx). Cloud providers (Kimi, DeepSeek, Gemini, OpenAI) are supported as first-class fallbacks, and v1.3.0 includes terminal-native cybersecurity benchmarking with structured cloud or Codex grading.
 
 Screen:
 ```bash
@@ -12,7 +12,7 @@ $ mycli
  | | | | | | |_| | |____| |____| |
  |_| |_| |_|\__, |\_____|______|_|
              __/ |
-            |___/           v1.2.0
+            |___/           v1.3.0
 
   tools [medium]: Read, Write, Bash, Edit, Glob, Grep, WebSearch
   omlx · Qwen3.8-27B · tools:medium · max_turns:30 · /opt/mycli
@@ -758,3 +758,24 @@ notification compliance.
 ## License
 
 MIT
+
+### Large output protection (1.3.0)
+
+Bash drains stdout and stderr concurrently with bounded memory. The model receives
+at most 16 KiB per tool result, retaining the beginning and end with an explicit
+truncation marker. This applies to every tool at the agent boundary, including MCP.
+Each request further shares the available input budget across tool results,
+including the newest batch. User text, system instructions, tool calls and schemas
+are included in a conservative serialized-byte check, reserving `max_tokens` for
+the response plus 1,024 tokens for framing. Oversized requests fail locally with
+an actionable message; they are not silently sent to the provider. This is a
+conservative estimate, not a model-specific tokenizer. Set `context_window` to
+the actual server limit and `max_tokens` to the desired response limit.
+Compaction requests are bounded too. Individual tools other than Bash may still
+buffer data internally before the agent applies its result limit.
+
+Bash captures private files under `/tmp` (up to 16 MiB per stream, 16 recent
+streams, at most 256 MiB per process). Larger streams continue draining but the
+archive explicitly reports its cap. Archives are evicted as newer commands run
+and removed at normal CLI shutdown; abrupt termination can leave temporary files.
+Timeouts and cancellation terminate the command's process group on Unix.
