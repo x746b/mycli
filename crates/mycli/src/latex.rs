@@ -92,7 +92,11 @@ const UNWRAPPED: &[&str] = &[
     // falls back to the plain letter, which reads better than a glyph half
     // the terminals in use would render as a box.
     "mathbb", "mathcal", "mathfrak", "mathscr", "mathbfcal",
-    // Accents. The mark is lost, the symbol under it is not.
+
+];
+
+/// Accents carry mathematical meaning even without a portable combining glyph.
+const ACCENTS: &[&str] = &[
     "bar", "hat", "vec", "tilde", "dot", "ddot", "check", "breve", "acute",
     "grave", "overline", "underline", "widehat", "widetilde", "overrightarrow",
     "underbrace", "overbrace",
@@ -139,30 +143,39 @@ fn subscript(c: char) -> Option<char> {
 /// Read a `{...}` group starting at `chars[i]`, returning its contents and the
 /// index just past the closing brace. Nested braces are respected.
 fn read_group(chars: &[char], i: usize) -> Option<(String, usize)> {
-    if chars.get(i) != Some(&'{') {
-        return None;
+    read_delimited(chars, i, '{', '}')
+}
+
+fn read_delimited(chars: &[char], i: usize, open: char, close: char) -> Option<(String, usize)> {
+    if chars.get(i) != Some(&open) { return None; }
+    let mut depth = 1usize;
+    let mut j = i + 1;
+    while j < chars.len() {
+        if chars[j] == '\\' { j += 2; continue; }
+        if chars[j] == open { depth += 1; }
+        if chars[j] == close {
+            depth -= 1;
+            if depth == 0 { return Some((chars[i+1..j].iter().collect(), j + 1)); }
+        }
+        j += 1;
     }
-    let mut depth = 0usize;
-    let mut out = String::new();
-    for (offset, &c) in chars[i..].iter().enumerate() {
-        match c {
-            '{' => {
-                depth += 1;
-                if depth > 1 {
-                    out.push(c);
-                }
-            }
-            '}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some((out, i + offset + 1));
-                }
-                out.push(c);
-            }
-            _ => out.push(c),
+    None
+}
+
+/// Include attached arguments in an unsupported command's literal fallback.
+fn command_end(chars: &[char], after: usize) -> usize {
+    let mut end = after;
+    loop {
+        let mut next = end;
+        while chars.get(next).is_some_and(|c| c.is_whitespace()) { next += 1; }
+        let delimiters = match chars.get(next) {
+            Some('{') => ('{', '}'), Some('[') => ('[', ']'), _ => return end,
+        };
+        match read_delimited(chars, next, delimiters.0, delimiters.1) {
+            Some((_, stop)) => end = stop,
+            None => return chars.len(),
         }
     }
-    None // unbalanced
 }
 
 /// The argument of a command: a braced group, a whole command, or the single
@@ -186,7 +199,8 @@ fn read_argument(chars: &[char], i: usize) -> Option<(String, usize)> {
     }
     if chars.get(i) == Some(&'\\') {
         let (name, after) = read_command(chars, i + 1);
-        return Some((format!("\\{name}"), after));
+        let end = command_end(chars, after);
+        return Some((chars[i..end].iter().collect(), end));
     }
     chars.get(i).map(|c| (c.to_string(), i + 1))
 }
@@ -203,7 +217,7 @@ fn parenthesize(s: &str) -> String {
     if s.chars().count() <= 1 {
         return s.to_string();
     }
-    let atomic = s.chars().all(|c| c.is_alphanumeric() || c == '.' || c == 'π');
+    let atomic = s.parse::<f64>().is_ok();
     if atomic || already_wrapped(s) {
         s.to_string()
     } else {
@@ -240,6 +254,20 @@ fn already_wrapped(s: &str) -> bool {
 /// Convert one LaTeX expression to plain text. Recursive: arguments are
 /// converted before being placed.
 pub fn convert(expr: &str) -> String {
+    // Recursive conversion is bounded, and malformed grouping stays literal.
+    let mut depth = 0usize;
+    let mut escaped = false;
+    for c in expr.chars() {
+        if escaped { escaped = false; continue; }
+        if c == '\\' { escaped = true; continue; }
+        if c == '{' { depth += 1; }
+        if c == '}' {
+            if depth == 0 { return expr.into(); }
+            depth -= 1;
+        }
+        if depth > 32 { return expr.into(); }
+    }
+    if depth != 0 { return expr.into(); }
     let chars: Vec<char> = expr.chars().collect();
     let mut out = String::new();
     let mut i = 0;
@@ -254,6 +282,7 @@ pub fn convert(expr: &str) -> String {
                     continue;
                 }
                 let (name, after) = read_command(&chars, i + 1);
+                if !known_command(&name) { return expr.into(); }
                 i = apply_command(&chars, &name, after, &mut out);
             }
             '^' | '_' => {
@@ -328,12 +357,22 @@ fn read_command(chars: &[char], i: usize) -> (String, usize) {
     (chars[i..j].iter().collect(), j)
 }
 
+fn known_command(name: &str) -> bool {
+    symbols().contains_key(name) || UNWRAPPED.contains(&name) || ACCENTS.contains(&name)
+        || FUNCTIONS.contains(&name) || DROPPED.contains(&name)
+        || matches!(name, "begin" | "end" | "frac" | "dfrac" | "tfrac" | "sqrt"
+            | "pmod" | "binom" | "dbinom" | "tbinom" | "xrightarrow" | "xleftarrow"
+            | "{" | "}" | "$" | "%" | "&" | "#" | "_")
+}
+
 /// Emit the replacement for `\name` and return the index to continue from.
 fn apply_command(chars: &[char], name: &str, after: usize, out: &mut String) -> usize {
     // `\begin{env}` / `\end{env}`: the environment name is not content.
     if name == "begin" || name == "end" {
-        if let Some((_, next)) = read_group(chars, after) {
-            return next;
+        if let Some((env, next)) = read_group(chars, after) {
+            if matches!(env.as_str(), "matrix" | "pmatrix" | "bmatrix" | "Bmatrix" | "vmatrix" | "Vmatrix" | "aligned" | "align" | "align*" | "cases" | "equation" | "equation*") {
+                return next;
+            }
         }
     }
 
@@ -349,9 +388,32 @@ fn apply_command(chars: &[char], name: &str, after: usize, out: &mut String) -> 
     }
 
     if name == "sqrt" {
+        let mut start = after;
+        while chars.get(start).is_some_and(|c| c.is_whitespace()) { start += 1; }
+        let mut index = None;
+        if chars.get(start) == Some(&'[') {
+            if let Some((value, next)) = read_delimited(chars, start, '[', ']') {
+                index = Some(value); start = next;
+            } else {
+                out.extend(chars[after.saturating_sub(name.len() + 1)..].iter());
+                return chars.len();
+            }
+        }
+        if let Some((arg, next)) = read_argument(chars, start) {
+            let inner = convert(&arg);
+            match index.as_deref().map(str::trim) {
+                None | Some("2") => { out.push('√'); out.push_str(&parenthesize(&inner)); }
+                Some("3") => { out.push('∛'); out.push_str(&parenthesize(&inner)); }
+                Some("4") => { out.push('∜'); out.push_str(&parenthesize(&inner)); }
+                Some(n) => out.push_str(&format!("root({}, {})", convert(n), inner)),
+            }
+            return next;
+        }
+    }
+
+    if ACCENTS.contains(&name) {
         if let Some((arg, next)) = read_argument(chars, after) {
-            out.push('√');
-            out.push_str(&parenthesize(&convert(&arg)));
+            out.push_str(&format!("{name}({})", convert(&arg)));
             return next;
         }
     }
@@ -423,7 +485,9 @@ fn apply_command(chars: &[char], name: &str, after: usize, out: &mut String) -> 
     // Unknown: leave it visible rather than guess.
     out.push('\\');
     out.push_str(name);
-    after
+    let end = command_end(chars, after);
+    out.extend(chars[after..end].iter());
+    end
 }
 
 #[cfg(test)]
@@ -437,7 +501,7 @@ mod tests {
         assert_eq!(convert(r"a_1 + a_2"), "a₁ + a₂");
         // π has no superscript form, so the whole exponent falls back to
         // `^` notation rather than half of it being raised.
-        assert_eq!(convert(r"e^{i\pi} + 1 = 0"), "e^iπ + 1 = 0");
+        assert_eq!(convert(r"e^{i\pi} + 1 = 0"), "e^(iπ) + 1 = 0");
     }
 
     #[test]
@@ -478,8 +542,8 @@ mod tests {
         assert_eq!(convert(r"\mathcal{N}(\mu,\sigma^2)"), "N(μ,σ²)");
         // The named ones keep their glyph.
         assert_eq!(convert(r"\mathbb{R}"), "ℝ");
-        assert_eq!(convert(r"\bar{X}_n"), "Xₙ");
-        assert_eq!(convert(r"\overline{AB}"), "AB");
+        assert_eq!(convert(r"\bar{X}_n"), "bar(X)ₙ");
+        assert_eq!(convert(r"\overline{AB}"), "overline(AB)");
     }
 
     #[test]
@@ -503,7 +567,7 @@ mod tests {
     #[test]
     fn keeps_notation_it_cannot_map() {
         assert_eq!(convert(r"x^{q+1}"), "x^(q+1)");
-        assert_eq!(convert(r"\unknowncmd{x}"), r"\unknowncmdx");
+        assert_eq!(convert(r"\unknowncmd{x}"), r"\unknowncmd{x}");
     }
 
     /// Column separators are structure, not decoration.
@@ -778,3 +842,30 @@ mod markdown_tests {
 }
 
 
+
+#[cfg(test)]
+mod correctness_tests {
+    use super::*;
+    #[test]
+    fn groups_products_and_compound_command_arguments() {
+        assert_eq!(convert(r"\frac{1}{2a}"), "1/(2a)");
+        assert_eq!(convert(r"\frac{1}{23}"), "1/23");
+        assert_eq!(convert(r"\sqrt{ab}"), "√(ab)");
+        assert_eq!(convert(r"x^\frac{1}{2}"), "x^(1/2)");
+    }
+    #[test]
+    fn indexed_roots_and_accents_keep_meaning() {
+        assert_eq!(convert(r"\sqrt[3]{x+1}"), "∛(x+1)");
+        assert_eq!(convert(r"\sqrt[4]{x}"), "∜x");
+        assert_eq!(convert(r"\sqrt[n]{x}"), "root(n, x)");
+        assert_eq!(convert(r"\vec{v} + \bar{z}"), "vec(v) + bar(z)");
+    }
+    #[test]
+    fn unsupported_commands_and_invalid_groups_stay_literal() {
+        for text in [r"\mystery[opt]{x+y}{z}", r"\alpha + \mystery{a  +  b}", r"\mystery{a \{ b \} c}", r"\frac{1}{", r"\sqrt[3{x}"] {
+            assert_eq!(convert(text), text, "{text}");
+        }
+        let deep = format!("{}x{}", "{".repeat(1000), "}".repeat(1000));
+        assert_eq!(convert(&deep), deep);
+    }
+}
