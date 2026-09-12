@@ -12,7 +12,7 @@ $ mycli
  | | | | | | |_| | |____| |____| |
  |_| |_| |_|\__, |\_____|______|_|
              __/ |
-            |___/           v1.7.0
+            |___/           v1.9.0
 
   tools [medium]: Read, Write, Bash, Edit, Glob, Grep, WebSearch
   omlx · Qwen3.8-27B · tools:medium · max_turns:30 · /opt/mycli
@@ -573,15 +573,18 @@ searched, and supporting references/scripts are not automatically loaded.
 
 ## Code and tool output
 
+LaTeX previews now preserve mathematical grouping and align matrices, equation
+systems, and piecewise functions. See [terminal math examples](docs/math-rendering.md).
+
 Fenced code uses language-aware syntax colors, wraps long lines, and preserves
 literal code without applying prose formatting. Labels have room to breathe;
 unlabeled blocks use a continuous border:
 
 ```text
 ╭─ python ─────────────────╮
-│ def greet(name):        │
+│ def greet(name):         │
 │     return f"Hi, {name}" │
-╰─────────────────────────╯
+╰──────────────────────────╯
 ╭─────────────────────────╮
 │ Plain output goes here. │
 ╰─────────────────────────╯
