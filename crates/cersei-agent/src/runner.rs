@@ -428,6 +428,21 @@ pub async fn run_agent_streaming(
                     };
 
                     let mut result = result;
+                    // Preserve large non-Bash output for the human viewer before
+                    // applying the independent model excerpt budget.
+                    if result.content.len() > cersei_tools::output::MODEL_OUTPUT_BYTES
+                        && result.metadata.as_ref().and_then(|m| m.get("output_files")).is_none() {
+                        if let Ok(mut capture) = cersei_tools::output::Capture::new() {
+                            if capture.drain(result.content.as_bytes()).await.is_ok() {
+                                let mut metadata = result.metadata.take().unwrap_or_else(|| serde_json::json!({}));
+                                if !metadata.is_object() { metadata = serde_json::json!({}); }
+                                metadata["output_files"] = serde_json::json!([capture.path]);
+                                metadata["output_bytes"] = serde_json::json!(capture.total);
+                                metadata["archive_truncated"] = serde_json::json!(capture.total > cersei_tools::output::ARCHIVE_BYTES as u64);
+                                result.metadata = Some(metadata);
+                            }
+                        }
+                    }
                     result.content = cersei_tools::output::excerpt(&result.content, cersei_tools::output::MODEL_OUTPUT_BYTES);
                     let duration = start.elapsed();
 
@@ -436,6 +451,7 @@ pub async fn run_agent_streaming(
                             name: tool_name.clone(),
                             id: tool_id.clone(),
                             result: result.content.clone(),
+                            metadata: result.metadata.clone(),
                             is_error: result.is_error,
                             duration,
                         })
@@ -444,6 +460,7 @@ pub async fn run_agent_streaming(
                         name: tool_name.clone(),
                         id: tool_id.clone(),
                         result: result.content.clone(),
+                        metadata: result.metadata.clone(),
                         is_error: result.is_error,
                         duration,
                     });

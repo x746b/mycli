@@ -364,6 +364,14 @@ impl Helper for MyHelper {}
 /// any time. The new setting applies to the next model turn; `/thinking last`
 /// prints a block that already streamed in collapsed form.
 struct ToggleThinking;
+struct ViewOutput;
+impl ConditionalEventHandler for ViewOutput {
+    fn handle(&self, _evt: &rustyline::Event, _n: rustyline::RepeatCount,
+        _positive: bool, _ctx: &rustyline::EventContext<'_>) -> Option<Cmd> {
+        crate::output_view::show();
+        Some(Cmd::Repaint)
+    }
+}
 
 /// Keep blank submissions inside the editor so they do not leave frames in
 /// the transcript. Handle this before readline accepts (and prints) the line.
@@ -1113,10 +1121,14 @@ async fn run_prompt(
             AgentEvent::ToolEnd {
                 name,
                 result,
+                metadata,
                 is_error,
                 duration,
                 ..
-            } => renderer.tool_end(&name, &result, is_error, duration),
+            } => {
+                crate::output_view::record(&name, &result, metadata.as_ref(), is_error, duration);
+                renderer.tool_end(&name, &result, is_error, duration);
+            },
             AgentEvent::Error(msg) => {
                 // An interrupted turn surfaces as an error from the runner;
                 // the user already saw the interrupt notice, so don't shout.
@@ -1455,6 +1467,7 @@ fn handle_command(cmd: &str, args: &str, config: &Config, current_model: &str) -
             eprintln!("{ACCENT}Shortcuts:{RESET}");
             eprintln!("  ctrl+u             Clear the entire input (ctrl+y restores it)");
             eprintln!("  ctrl+o             Toggle reasoning display");
+            eprintln!("  ctrl+t             Browse full tool output (queued while a turn runs)");
             eprintln!("  ctrl+c             Interrupt the current turn (twice to force exit)");
             eprintln!("  ctrl+d             Exit");
             eprintln!("  tab                Complete slash commands");
@@ -1847,6 +1860,10 @@ pub async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
         editor.bind_sequence(key, EventHandler::Conditional(Box::new(ToggleThinking)));
     }
 
+    for key in [KeyEvent::ctrl('t'), KeyEvent::ctrl('T')] {
+        editor.bind_sequence(key, EventHandler::Conditional(Box::new(ViewOutput)));
+    }
+
     let history_path = config::history_path();
     if history_path.exists() {
         let _ = editor.load_history(&history_path);
@@ -1864,6 +1881,7 @@ pub async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
     status::draw();
 
     loop {
+        if crate::output_view::take_requested() { crate::output_view::show(); }
         prompt_open();
         // Anything typed while the model was working was consumed by the key
         // watcher; put it back so type-ahead survives.
@@ -2074,5 +2092,23 @@ mod balance_tests {
             first.and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp(),
             parse_since("2026-08-01").unwrap()
         );
+    }
+}
+
+#[cfg(test)]
+mod output_view_terminal_tests {
+    use super::*;
+    use std::time::Duration;
+    /// Run in a PTY: type `draft`, Ctrl+T, End, [, ], q, then ` text` and Enter.
+    #[test]
+    #[ignore = "requires an interactive PTY"]
+    fn output_view_preserves_prompt() {
+        crate::output_view::record("Earlier result", "earlier output", None, false, Duration::ZERO);
+        let text = (1..=88).map(|i| format!("output line {i}\n")).collect::<String>();
+        crate::output_view::record("Bash", &text, None, false, Duration::ZERO);
+        let mut editor = rustyline::DefaultEditor::new().unwrap();
+        editor.bind_sequence(KeyEvent::ctrl('t'), EventHandler::Conditional(Box::new(ViewOutput)));
+        let line = editor.readline("smoke> ").unwrap();
+        assert_eq!(line, "draft text");
     }
 }

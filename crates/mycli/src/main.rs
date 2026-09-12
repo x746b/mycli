@@ -5,6 +5,7 @@ mod config;
 mod keys;
 mod latex;
 mod markdown;
+mod output_view;
 mod render;
 mod repl;
 mod status;

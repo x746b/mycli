@@ -203,6 +203,11 @@ fn watch(stop: Arc<AtomicBool>, cancel: CancellationToken) {
                 cancel.cancel();
                 render::interrupt_notice();
             }
+            KeyCode::Char('t') | KeyCode::Char('T')
+                if modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                crate::output_view::request();
+            }
             KeyCode::Char('o') | KeyCode::Char('O')
                 if modifiers.contains(KeyModifiers::CONTROL) =>
             {

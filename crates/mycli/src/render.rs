@@ -364,7 +364,7 @@ impl Renderer {
         }
         if lines > shown && shown > 0 {
             out.push_str(&format!(
-                "    {DIM}\u{2026} +{} line{}{RESET}\r\n",
+                "    {DIM}\u{2026} +{} line{} · ctrl+t to view{RESET}\r\n",
                 lines - shown,
                 if lines - shown == 1 { "" } else { "s" }
             ));
@@ -554,7 +554,7 @@ pub fn session_info(config: &crate::config::Config, model_display: &str) {
     );
     let _ = write!(
         err,
-        "  {DIM}ctrl+c interrupt · ctrl+d exit · / commands · ctrl+o thinking · ctrl+u clear input{RESET}\n"
+        "  {DIM}ctrl+c interrupt · ctrl+d exit · / commands · ctrl+o thinking · ctrl+t tool output · ctrl+u clear input{RESET}\n"
     );
     let _ = err.flush();
 }

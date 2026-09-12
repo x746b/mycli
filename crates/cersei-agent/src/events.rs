@@ -26,6 +26,7 @@ pub enum AgentEvent {
         name: String,
         id: String,
         result: String,
+        metadata: Option<serde_json::Value>,
         is_error: bool,
         duration: Duration,
     },

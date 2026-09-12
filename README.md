@@ -1,6 +1,6 @@
 # MyCLI
 
-Lightweight AI coding CLI for testing LLM capabilities — especially local models running on [oMLX](https://github.com/jundot/omlx). Cloud providers (Kimi, DeepSeek, Gemini, OpenAI) are supported as first-class fallbacks, and v1.5.0 includes terminal-native cybersecurity benchmarking with structured cloud or Codex grading.
+Lightweight AI coding CLI for testing LLM capabilities — especially local models running on [oMLX](https://github.com/jundot/omlx). Cloud providers (Kimi, DeepSeek, Gemini, OpenAI) are supported as first-class fallbacks, and v1.6.0 includes terminal-native cybersecurity benchmarking with structured cloud or Codex grading.
 
 Screen:
 ```bash
@@ -12,7 +12,7 @@ $ mycli
  | | | | | | |_| | |____| |____| |
  |_| |_| |_|\__, |\_____|______|_|
              __/ |
-            |___/           v1.5.0
+            |___/           v1.6.0
 
   tools [medium]: Read, Write, Bash, Edit, Glob, Grep, WebSearch
   omlx · Qwen3.8-27B · tools:medium · max_turns:30 · /opt/mycli
@@ -811,3 +811,14 @@ fall back to plain text. Matching backtick/tilde fences are recognized while
 streaming, code is protected from math/table rewriting, and long lines wrap
 without dropping their contents. `NO_COLOR` or `TERM=dumb` disables fenced-code
 colors. `MYCLI_RAW=1` continues to emit the original Markdown unchanged.
+
+### Full tool output viewer (1.6.0)
+
+Press **Ctrl+T** at the prompt to open the latest completed tool output in a
+scrollable alternate screen. During a running turn, Ctrl+T queues the viewer for
+the next prompt. Use Up/Down, PageUp/PageDown, Home/End to scroll, Left/Right to pan
+long lines, and `[` / `]` to browse earlier results. Close with `q`, Esc, or Ctrl+T;
+the transcript and any partially typed prompt are restored. The viewer retains
+32 result entries. For archived output, the 1.3.0 disk limits still apply; capped
+or evicted archives are explicitly identified. Large non-Bash results are now
+archived before model truncation too. Viewing output never sends it to the LLM.

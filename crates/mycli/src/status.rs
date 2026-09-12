@@ -543,3 +543,17 @@ mod tests {
         assert_eq!(fmt_rate(412.6), "413");
     }
 }
+
+/// Re-establish the footer margins after leaving an alternate-screen viewer,
+/// without adding the blank lines used on initial setup.
+pub fn restore_after_viewer() {
+    if !STATE.lock().enabled { return; }
+    if let Ok((_, rows)) = crossterm::terminal::size() {
+        if rows >= FOOTER_ROWS + 2 {
+            let mut err = io::stderr();
+            let _ = write!(err, "\x1b[s\x1b[1;{}r\x1b[u", rows - FOOTER_ROWS);
+            let _ = err.flush();
+        }
+    }
+    draw();
+}
