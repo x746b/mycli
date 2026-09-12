@@ -1,6 +1,6 @@
 # MyCLI
 
-Lightweight AI coding CLI for testing LLM capabilities — especially local models running on [oMLX](https://github.com/jundot/omlx). Cloud providers (Kimi, DeepSeek, Gemini, OpenAI) are supported as first-class fallbacks, and v1.3.0 includes terminal-native cybersecurity benchmarking with structured cloud or Codex grading.
+Lightweight AI coding CLI for testing LLM capabilities — especially local models running on [oMLX](https://github.com/jundot/omlx). Cloud providers (Kimi, DeepSeek, Gemini, OpenAI) are supported as first-class fallbacks, and v1.4.0 includes terminal-native cybersecurity benchmarking with structured cloud or Codex grading.
 
 Screen:
 ```bash
@@ -12,7 +12,7 @@ $ mycli
  | | | | | | |_| | |____| |____| |
  |_| |_| |_|\__, |\_____|______|_|
              __/ |
-            |___/           v1.3.0
+            |___/           v1.4.0
 
   tools [medium]: Read, Write, Bash, Edit, Glob, Grep, WebSearch
   omlx · Qwen3.8-27B · tools:medium · max_turns:30 · /opt/mycli
@@ -572,7 +572,7 @@ searched, and supporting references/scripts are not automatically loaded.
 
 ## MCP (Model Context Protocol)
 
-MyCLI connects to MCP servers over stdio transport. Tools are auto-discovered at
+MyCLI connects to MCP servers over stdio or Streamable HTTP transport. Tools are auto-discovered at
 startup on the `full` tool tier — add `[mcp_servers.<name>]` tables to your config (see
 [Configuration](#configuration)), then use `/mcp` in the REPL to see server status.
 
@@ -592,9 +592,9 @@ VAULT_DB = "/path/to/vault.db"
 VAULT_READONLY = "1"
 ```
 
-Supported fields are `command`, `args`, `env`, `cwd`, and `enabled`. HTTP `url`
-servers and other Codex-specific settings are reported as unsupported in
-`/mcp`; mycli does not start servers with unsupported settings. This prevents
+Stdio fields are `command`, `args`, `env`, `cwd`, and `enabled`. HTTP servers use
+`url`, optional `http_headers`, `env_http_headers`, and `bearer_token_env_var`.
+Other unsupported settings are reported in `/mcp`; mycli does not start those servers. This prevents
 copied tool filters or approval settings from being silently ignored.
 
 Legacy `[[mcp]]` entries remain supported. If both formats define the same
@@ -779,3 +779,26 @@ streams, at most 256 MiB per process). Larger streams continue draining but the
 archive explicitly reports its cap. Archives are evicted as newer commands run
 and removed at normal CLI shutdown; abrupt termination can leave temporary files.
 Timeouts and cancellation terminate the command's process group on Unix.
+
+### HTTP MCP (1.4.0)
+
+Remote MCP servers use Streamable HTTP, supporting both JSON and SSE POST
+responses, negotiated protocol/session headers, optional authentication, and
+session renewal. Stdio servers keep using their existing configuration.
+
+```toml
+[mcp_servers.ida-pro]
+url = "http://127.0.0.1:13337/mcp"
+# Optional: read a bearer token from the environment.
+# bearer_token_env_var = "IDA_MCP_TOKEN"
+# http_headers = { "X-Client" = "mycli" }
+# env_http_headers = { "X-API-Key" = "IDA_API_KEY" }
+```
+
+Use your server's actual endpoint. `/tools` reloads servers; `/mcp verbose` shows
+discovered tools or connection errors. Header values and URLs are redacted in
+configuration diagnostics. Requests have a 30-second deadline and responses a
+16 MiB limit. Redirects are rejected. Expired sessions are reinitialized without
+replaying the original tool call, to avoid duplicate side effects. Legacy HTTP+SSE
+endpoints (`/sse` with a separate POST endpoint), OAuth discovery, and resumable
+streams are not implemented; configure the server's Streamable HTTP endpoint.

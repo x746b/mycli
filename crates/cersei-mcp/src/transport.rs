@@ -196,3 +196,23 @@ impl Drop for StdioTransport {
         let _ = self.child.start_kill();
     }
 }
+
+/// Common transport interface keeps discovery and tool calls identical.
+pub enum Transport {
+    Stdio(StdioTransport),
+    Http(crate::http::HttpTransport),
+}
+impl Transport {
+    pub async fn request(&mut self, method: &str, params: Option<serde_json::Value>) -> Result<serde_json::Value> {
+        match self {
+            Self::Stdio(t) => t.request(method, params).await,
+            Self::Http(t) => t.request(method, params).await,
+        }
+    }
+    pub async fn notify(&mut self, method: &str, params: Option<serde_json::Value>) -> Result<()> {
+        match self {
+            Self::Stdio(t) => t.notify(method, params).await,
+            Self::Http(t) => t.notify(method, params).await,
+        }
+    }
+}

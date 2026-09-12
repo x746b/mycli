@@ -5,6 +5,7 @@
 //! as standard Cersei tool definitions.
 
 pub mod jsonrpc;
+pub mod http;
 pub mod transport;
 
 use cersei_types::*;
@@ -26,6 +27,8 @@ pub struct McpServerConfig {
     #[serde(default)]
     pub cwd: Option<String>,
     pub url: Option<String>,
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
     #[serde(rename = "type", default = "default_type")]
     pub server_type: String,
 }
@@ -41,8 +44,15 @@ impl McpServerConfig {
             env: HashMap::new(),
             cwd: None,
             url: None,
+            headers: HashMap::new(),
             server_type: "stdio".to_string(),
         }
+    }
+
+    pub fn http(name: impl Into<String>, url: impl Into<String>) -> Self {
+        let mut config = Self::sse(name, url);
+        config.server_type = "http".into();
+        config
     }
 
     pub fn sse(name: impl Into<String>, url: impl Into<String>) -> Self {
@@ -53,6 +63,7 @@ impl McpServerConfig {
             env: HashMap::new(),
             cwd: None,
             url: Some(url.into()),
+            headers: HashMap::new(),
             server_type: "sse".to_string(),
         }
     }
@@ -115,7 +126,7 @@ pub struct McpClient {
     pub status: McpServerStatus,
     pub tools: Vec<McpToolDef>,
     pub resources: Vec<McpResource>,
-    transport: Option<transport::StdioTransport>,
+    transport: Option<transport::Transport>,
 }
 
 impl McpClient {
@@ -123,80 +134,79 @@ impl McpClient {
     pub async fn connect(config: McpServerConfig) -> Result<Self> {
         let config_expanded = expand_server_config(&config);
 
-        if config_expanded.server_type == "stdio" {
+        let mut transport = if config_expanded.server_type == "stdio" {
             let command = config_expanded.command.as_deref()
                 .ok_or_else(|| CerseiError::Mcp("stdio server requires 'command'".into()))?;
 
-            let mut transport = transport::StdioTransport::spawn(
+            transport::Transport::Stdio(transport::StdioTransport::spawn(
                 command,
                 &config_expanded.args,
                 &config_expanded.env,
                 config_expanded.cwd.as_deref(),
-            ).await?;
-
-            // Initialize handshake
-            let init_params = serde_json::json!({
-                "protocolVersion": "2024-11-05",
-                "capabilities": {
-                    "roots": { "listChanged": true }
-                },
-                "clientInfo": {
-                    "name": "cersei",
-                    "version": env!("CARGO_PKG_VERSION")
-                }
-            });
-
-            let init_result = transport.request("initialize", Some(init_params)).await?;
-            tracing::debug!("MCP initialize result: {:?}", init_result);
-
-            // Send initialized notification
-            transport.notify("notifications/initialized", Some(serde_json::json!({}))).await?;
-
-            // Small delay to let server process the notification
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
-            // Discover tools
-            let tools: Vec<McpToolDef> = match transport.request("tools/list", Some(serde_json::json!({}))).await {
-                Ok(result) => result
-                    .get("tools")
-                    .and_then(|t| serde_json::from_value(t.clone()).ok())
-                    .unwrap_or_default(),
-                Err(e) => {
-                    eprintln!("  \x1b[33mMCP tools/list failed: {e}\x1b[0m");
-                    Vec::new()
-                }
-            };
-
-            // Discover resources
-            let resources = match transport.request("resources/list", None).await {
-                Ok(res) => res
-                    .get("resources")
-                    .and_then(|r| serde_json::from_value(r.clone()).ok())
-                    .unwrap_or_default(),
-                Err(_) => Vec::new(), // resources are optional
-            };
-
-            tracing::info!(
-                server = %config.name,
-                tools = tools.len(),
-                resources = resources.len(),
-                "MCP server connected"
-            );
-
-            Ok(Self {
-                config,
-                status: McpServerStatus::Connected,
-                tools,
-                resources,
-                transport: Some(transport),
-            })
+            ).await?)
+        } else if matches!(config_expanded.server_type.as_str(), "http" | "streamable-http") {
+            transport::Transport::Http(http::HttpTransport::new(
+                config_expanded.url.as_deref().ok_or_else(|| CerseiError::Mcp("HTTP server requires url".into()))?,
+                &config_expanded.headers,
+            )?)
         } else {
-            // SSE transport placeholder
-            Err(CerseiError::Mcp(format!(
-                "SSE transport not yet implemented for server '{}'",
-                config.name
-            )))
-        }
+            return Err(CerseiError::Mcp("Unsupported transport; use stdio or http (Streamable HTTP)".into()));
+        };
+
+        // Initialize handshake
+        let init_params = serde_json::json!({
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": {
+                "name": "cersei",
+                "version": env!("CARGO_PKG_VERSION")
+            }
+        });
+
+        let init_result = transport.request("initialize", Some(init_params)).await?;
+        tracing::debug!("MCP initialize result: {:?}", init_result);
+
+        // Send initialized notification
+        transport.notify("notifications/initialized", Some(serde_json::json!({}))).await?;
+
+        // Small delay to let server process the notification
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // Discover tools
+        let tools: Vec<McpToolDef> = match transport.request("tools/list", Some(serde_json::json!({}))).await {
+            Ok(result) => result
+                .get("tools")
+                .and_then(|t| serde_json::from_value(t.clone()).ok())
+                .unwrap_or_default(),
+            Err(e) => {
+                eprintln!("  \x1b[33mMCP tools/list failed: {e}\x1b[0m");
+                Vec::new()
+            }
+        };
+
+        // Discover resources
+        let resources = match transport.request("resources/list", None).await {
+            Ok(res) => res
+                .get("resources")
+                .and_then(|r| serde_json::from_value(r.clone()).ok())
+                .unwrap_or_default(),
+            Err(_) => Vec::new(), // resources are optional
+        };
+
+        tracing::info!(
+            server = %config.name,
+            tools = tools.len(),
+            resources = resources.len(),
+            "MCP server connected"
+        );
+
+        Ok(Self {
+            config,
+            status: McpServerStatus::Connected,
+            tools,
+            resources,
+            transport: Some(transport),
+        })
     }
 
     /// Call a tool on this MCP server.
@@ -447,6 +457,7 @@ pub fn expand_server_config(config: &McpServerConfig) -> McpServerConfig {
         env: config.env.iter().map(|(k, v)| (k.clone(), expand_env_vars(v))).collect(),
         cwd: config.cwd.as_deref().map(expand_env_vars),
         url: config.url.as_deref().map(expand_env_vars),
+        headers: config.headers.iter().map(|(k, v)| (k.clone(), expand_env_vars(v))).collect(),
         server_type: config.server_type.clone(),
     }
 }
@@ -521,6 +532,7 @@ mod tests {
             env: HashMap::from([("KEY".into(), "${CERSEI_MCP_CMD}".into())]),
             cwd: Some("${CERSEI_MCP_CMD}".into()),
             url: None,
+            headers: HashMap::new(),
             server_type: "stdio".into(),
         };
         let expanded = expand_server_config(&config);

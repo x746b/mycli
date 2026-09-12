@@ -87,6 +87,12 @@ pub struct McpEntry {
     pub enabled: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub http_headers: HashMap<String, String>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub env_http_headers: HashMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bearer_token_env_var: Option<String>,
     /// Preserve unimplemented Codex options so they cannot be silently ignored.
     #[serde(flatten)]
     pub extra: BTreeMap<String, toml::Value>,
@@ -94,24 +100,55 @@ pub struct McpEntry {
 
 impl McpEntry {
     pub fn config_error(&self) -> Option<String> {
-        if self.url.is_some() {
-            return Some("HTTP MCP transport is not supported yet; use a command-based stdio server".into());
+        if let Some(url) = &self.url {
+            if !self.command.trim().is_empty() || !self.args.is_empty() || !self.env.is_empty() || self.cwd.is_some() {
+                return Some("HTTP MCP cannot also specify command, args, env, or cwd".into());
+            }
+            if let Err(e) = self.resolved_headers().and_then(|h| cersei_mcp::http::HttpTransport::new(&cersei_mcp::expand_env_vars(url), &h).map(|_| ()).map_err(|e| e.to_string())) {
+                return Some(e);
+            }
+        } else if !self.http_headers.is_empty() || !self.env_http_headers.is_empty() || self.bearer_token_env_var.is_some() {
+            return Some("MCP HTTP headers require a url".into());
         }
         if !self.extra.is_empty() {
             return Some(format!("Unsupported MCP settings: {}", self.extra.keys().cloned().collect::<Vec<_>>().join(", ")));
         }
-        if self.name.is_empty() || self.command.trim().is_empty() {
+        if self.name.is_empty() || (self.url.is_none() && self.command.trim().is_empty()) {
             return Some("MCP server needs a name and command".into());
         }
         None
     }
 
-    pub fn server_config(&self) -> cersei_mcp::McpServerConfig {
+    fn resolved_headers(&self) -> Result<HashMap<String, String>, String> {
+        let mut headers: HashMap<String, String> = self.http_headers.iter()
+            .map(|(k, v)| (k.to_ascii_lowercase(), v.clone())).collect();
+        if headers.len() != self.http_headers.len() { return Err("Duplicate MCP HTTP header".into()); }
+        for (header, variable) in &self.env_http_headers {
+            let value = std::env::var(variable).map_err(|_| format!("Missing MCP header environment variable: {variable}"))?;
+            if headers.insert(header.to_ascii_lowercase(), value).is_some() {
+                return Err("Duplicate MCP HTTP header".into());
+            }
+        }
+        if let Some(variable) = &self.bearer_token_env_var {
+            let value = std::env::var(variable).map_err(|_| format!("Missing MCP bearer environment variable: {variable}"))?;
+            if headers.insert("authorization".into(), format!("Bearer {value}")).is_some() {
+                return Err("Duplicate MCP authorization header".into());
+            }
+        }
+        Ok(headers)
+    }
+
+    pub fn server_config(&self) -> Result<cersei_mcp::McpServerConfig, String> {
+        if let Some(url) = &self.url {
+            let mut config = cersei_mcp::McpServerConfig::http(&self.name, url);
+            config.headers = self.resolved_headers()?;
+            return Ok(config);
+        }
         let args: Vec<&str> = self.args.iter().map(String::as_str).collect();
         let mut config = cersei_mcp::McpServerConfig::stdio(&self.name, &self.command, &args);
         config.env = self.env.clone();
         config.cwd = self.cwd.clone();
-        config
+        Ok(config)
     }
 }
 
@@ -229,6 +266,8 @@ impl Config {
             }
         }
         let redact_env = |entry: &mut McpEntry| {
+            for value in entry.http_headers.values_mut() { *value = "<redacted>".into(); }
+            if entry.url.is_some() { entry.url = Some("<redacted>".into()); }
             for (name, value) in &mut entry.env {
                 if !value.is_empty() && sensitive_env_name(name) {
                     *value = "<redacted>".into();
@@ -414,7 +453,7 @@ mod mcp_config_tests {
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].name, "command-vault");
         assert_eq!(entries[0].env["VAULT_READONLY"], "1");
-        assert_eq!(entries[0].server_config().cwd.as_deref(), Some("/tmp"));
+        assert_eq!(entries[0].server_config().unwrap().cwd.as_deref(), Some("/tmp"));
         assert_eq!(entries[1].env["EXAMPLE"], "value");
         assert!(entries.iter().all(|entry| entry.enabled && entry.config_error().is_none()));
     }
@@ -470,7 +509,8 @@ mod mcp_config_tests {
             disabled_tools = ["example"]
         "#).unwrap();
         assert_eq!(config.model, "still-loaded");
-        assert!(config.mcp_entries()[0].config_error().unwrap().contains("HTTP MCP"));
+        assert!(config.mcp_entries()[0].config_error().is_none());
+        assert_eq!(config.mcp_entries()[0].server_config().unwrap().server_type, "http");
         assert!(config.mcp_entries()[1].config_error().unwrap().contains("disabled_tools"));
     }
 }
@@ -506,6 +546,7 @@ mod redaction_tests {
                 cwd: None,
                 enabled: true,
                 url: None,
+                http_headers: HashMap::new(), env_http_headers: HashMap::new(), bearer_token_env_var: None,
                 extra: BTreeMap::new(),
             },
         );
@@ -822,5 +863,27 @@ mod context_window_tests {
 
         let config = config_with(CloudProfile { api_key: "k".into(), ..Default::default() });
         assert_eq!(config.resolve_cloud("openai").unwrap().context_window, None);
+    }
+}
+
+#[cfg(test)]
+mod http_config_tests {
+    use super::*;
+    #[test]
+    fn headers_are_redacted_and_bad_configs_fail_closed() {
+        let config: Config = toml::from_str(r#"[mcp_servers.remote]
+url = "http://localhost/mcp?key=secret"
+http_headers = { Authorization = "Bearer secret" }
+"#).unwrap();
+        let text = toml::to_string(&config.redacted()).unwrap();
+        assert!(!text.contains("secret"));
+        assert!(config.mcp_entries()[0].config_error().is_none());
+        let mut entry = config.mcp_entries()[0].clone();
+        entry.command = "python".into();
+        assert!(entry.config_error().is_some());
+        entry.command.clear();
+        entry.bearer_token_env_var = Some("MYCLI_MISSING_TEST_TOKEN_987".into());
+        assert!(entry.config_error().is_some());
+        assert!(entry.server_config().is_err());
     }
 }

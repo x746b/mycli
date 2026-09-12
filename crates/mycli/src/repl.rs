@@ -870,7 +870,13 @@ async fn build_agent(config: &Config, cancel_token: CancellationToken) -> anyhow
                 eprintln!("  {RED}mcp {}: {error}{RESET}", entry.name);
                 report.push((entry.name.clone(), Err(error)));
             } else {
-                mcp_configs.push(entry.server_config());
+                match entry.server_config() {
+                    Ok(config) => mcp_configs.push(config),
+                    Err(error) => {
+                        eprintln!("  {RED}mcp {}: {error}{RESET}", entry.name);
+                        report.push((entry.name.clone(), Err(error)));
+                    }
+                }
             }
         }
 

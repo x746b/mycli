@@ -66,3 +66,10 @@ model = "gpt-5.4"
 # /usage then shows `credits - spend since credits_since`.
 # credits = 50.00
 # credits_since = "2026-08-01"
+
+# Streamable HTTP MCP (use your server's actual endpoint):
+# [mcp_servers.ida-pro]
+# url = "http://127.0.0.1:13337/mcp"
+# bearer_token_env_var = "IDA_MCP_TOKEN"
+# http_headers = { "X-Client" = "mycli" }
+# env_http_headers = { "X-API-Key" = "IDA_API_KEY" }
