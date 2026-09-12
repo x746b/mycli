@@ -133,6 +133,36 @@ fn render_code(code: &str, language: &str, width: usize) -> String {
 }
 
 fn render_prose(text: &str, width: usize) -> String {
+    let (parts, _) = crate::latex::math_regions(text);
+    let mut out = String::new();
+    let mut after_display = false;
+    for part in parts {
+        match part {
+            crate::latex::MathPart::Prose(text) => {
+                let text = if after_display { text.strip_prefix('\n').unwrap_or(text) } else { text };
+                out.push_str(&render_markdown_prose(text, width));
+                after_display = false;
+            }
+            crate::latex::MathPart::Display(expr) => {
+                if !out.is_empty() && !out.ends_with('\n') { out.push('\n'); }
+                after_display = true;
+                let converted = crate::latex::convert(expr.trim());
+                let plain: String = crate::ui::strip_ansi(&converted).chars()
+                    .map(|c| if c.is_control() && c != '\n' { ' ' } else { c }).collect();
+                let plain = plain.trim_matches('\n');
+                if plain.lines().any(|line| crate::ui::display_width(line) > width.saturating_sub(4)) {
+                    // Wrapping a matrix row separately destroys its column layout.
+                    out.push_str(&render_code(expr, "latex", width));
+                } else {
+                    for line in plain.lines() { out.push_str(&format!("  {line}\n")); }
+                }
+            }
+        }
+    }
+    out
+}
+
+fn render_markdown_prose(text: &str, width: usize) -> String {
     // Maths first: a terminal cannot typeset LaTeX, and leaving it raw buries
     // the answer in backslashes. See `latex::render_math`.
     let text = crate::latex::render_math(text);
@@ -527,18 +557,7 @@ fn render_table(lines: &[&str], width: usize) -> String {
 
 /// Byte offset of a `$$` or `\[` that has no closing partner yet.
 fn open_math_block(text: &str) -> Option<usize> {
-    for (open, close) in [("$$", "$$"), (r"\[", r"\]")] {
-        let mut search = 0usize;
-        while let Some(rel) = text[search..].find(open) {
-            let start = search + rel;
-            let after = start + open.len();
-            match text[after..].find(close) {
-                Some(len) => search = after + len + close.len(),
-                None => return Some(start),
-            }
-        }
-    }
-    None
+    crate::latex::math_regions(text).1
 }
 
 /// Length of the prefix of `buf` that is safe to render now.
@@ -824,4 +843,66 @@ mod code_tests {
             assert!(colors.len() >= 3, "{out:?}");
         }
     }
+}
+
+#[cfg(test)]
+mod math_layout_tests {
+    use super::*;
+    #[test]
+    fn display_math_preserves_spacing_and_underscores() {
+        let source = r"\[\begin{aligned}x&=a_{jq}\\long&=b_{qr}\end{aligned}\]";
+        let rendered = crate::ui::strip_ansi(&render(source, 80));
+        assert!(rendered.contains("     x =a_(jq)"), "{rendered:?}");
+        assert!(rendered.contains("  long =b_(qr)"), "{rendered:?}");
+    }
+    #[test]
+    fn holds_bare_environments_until_complete() {
+        let start = "Result:\n\n\\begin{bmatrix}a&b\n";
+        assert_eq!(safe_prefix_len(start), "Result:\n\n".len());
+        let closed = format!("{start}\\end{{bmatrix}}\n");
+        assert_eq!(safe_prefix_len(&closed), closed.len());
+    }
+    #[test]
+    fn matrices_render_inside_display_delimiters_and_bare_environments() {
+        let source = r"\begin{bmatrix}a&b\\c&d\end{bmatrix}";
+        for text in [source.to_string(), format!("\\[{source}\\]")] {
+            let rendered = crate::ui::strip_ansi(&render(&text, 80));
+            assert!(rendered.contains("  ⎡ a  b ⎤\n  ⎣ c  d ⎦"), "{rendered:?}");
+        }
+    }
+    #[test]
+    fn math_in_code_stays_literal_and_does_not_stall_streaming() {
+        let text = "Run `echo $$` first\n";
+        assert_eq!(safe_prefix_len(text), text.len());
+        let fenced = "```latex\n\\begin{matrix}a&b\\end{matrix}\n```\n";
+        let rendered = crate::ui::strip_ansi(&render(fenced, 80));
+        assert!(rendered.contains(r"\begin{matrix}a&b\end{matrix}"));
+    }
+    #[test]
+    fn narrow_layouts_fall_back_to_source_without_losing_cells() {
+        let text = r"\[\begin{bmatrix}123456789&987654321\end{bmatrix}\]";
+        let rendered = crate::ui::strip_ansi(&render(text, 20));
+        assert!(rendered.contains("latex"));
+        let joined: String = rendered.lines().filter(|l| l.starts_with('│'))
+            .map(|l| l.trim_matches('│').trim()).collect();
+        assert!(joined.contains("123456789&987654321"), "{joined}");
+        for line in rendered.lines() { assert!(crate::ui::display_width(line) <= 20); }
+    }
+    #[test]
+    fn currency_does_not_hide_later_display_math() {
+        let text = "Cost: $5\n\n\\[\\begin{bmatrix}a&b\\end{bmatrix}\\]\n";
+        let rendered = crate::ui::strip_ansi(&render(text, 80));
+        assert!(rendered.contains("$5"), "{rendered}");
+        assert!(rendered.contains("[ a  b ]"), "{rendered}");
+        assert_eq!(safe_prefix_len(text), text.len());
+    }
+    #[test]
+    fn inline_delimiters_with_matrices_are_promoted_to_display() {
+        let matrix = r"\begin{bmatrix}a&b\end{bmatrix}";
+        for text in [format!("${matrix}$"), format!(r"\({matrix}\)")] {
+            let rendered = crate::ui::strip_ansi(&render(&text, 80));
+            assert_eq!(rendered.trim(), "[ a  b ]");
+        }
+    }
+
 }

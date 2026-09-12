@@ -4,6 +4,7 @@
 mod config;
 mod keys;
 mod latex;
+mod latex_layout;
 mod markdown;
 mod output_view;
 mod render;

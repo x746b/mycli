@@ -185,6 +185,11 @@ fn command_end(chars: &[char], after: usize) -> usize {
 /// and `\oint_\gamma` are all written without braces, and taking one
 /// character left the exponent as a lone backslash — `x^(\)top`.
 fn read_argument(chars: &[char], i: usize) -> Option<(String, usize)> {
+    read_argument_depth(chars, i, 0)
+}
+
+fn read_argument_depth(chars: &[char], i: usize, depth: usize) -> Option<(String, usize)> {
+    if depth > 32 { return None; }
     // A space between a command and its argument is not part of it:
     // `\pmod n` takes `n`, not the space.
     let i = {
@@ -199,7 +204,18 @@ fn read_argument(chars: &[char], i: usize) -> Option<(String, usize)> {
     }
     if chars.get(i) == Some(&'\\') {
         let (name, after) = read_command(chars, i + 1);
-        let end = command_end(chars, after);
+        let mut end = after;
+        if name == "sqrt" && chars.get(end) == Some(&'[') {
+            end = read_delimited(chars, end, '[', ']')?.1;
+        }
+        let arguments = if matches!(name.as_str(), "frac" | "dfrac" | "tfrac" | "binom" | "dbinom" | "tbinom") { 2 }
+            else if UNWRAPPED.contains(&name.as_str()) || ACCENTS.contains(&name.as_str())
+                || matches!(name.as_str(), "sqrt" | "pmod" | "xrightarrow" | "xleftarrow") { 1 }
+            else { 0 };
+        for _ in 0..arguments {
+            end = read_argument_depth(chars, end, depth + 1)?.1;
+        }
+        if !known_command(&name) { end = command_end(chars, end); }
         return Some((chars[i..end].iter().collect(), end));
     }
     chars.get(i).map(|c| (c.to_string(), i + 1))
@@ -254,6 +270,7 @@ fn already_wrapped(s: &str) -> bool {
 /// Convert one LaTeX expression to plain text. Recursive: arguments are
 /// converted before being placed.
 pub fn convert(expr: &str) -> String {
+    if expr.len() > 16 * 1024 { return expr.into(); }
     // Recursive conversion is bounded, and malformed grouping stays literal.
     let mut depth = 0usize;
     let mut escaped = false;
@@ -268,6 +285,7 @@ pub fn convert(expr: &str) -> String {
         if depth > 32 { return expr.into(); }
     }
     if depth != 0 { return expr.into(); }
+    if expr.contains(r"\begin{") { return crate::latex_layout::render(expr); }
     let chars: Vec<char> = expr.chars().collect();
     let mut out = String::new();
     let mut i = 0;
@@ -574,8 +592,8 @@ mod tests {
     #[test]
     fn keeps_matrix_columns_apart() {
         let got = convert(r"\begin{pmatrix}2&1\\1&2\end{pmatrix}");
-        assert!(got.contains("2 1"), "{got:?}");
-        assert!(got.contains("1 2"), "{got:?}");
+        assert!(got.contains("2  1"), "{got:?}");
+        assert!(got.contains("1  2"), "{got:?}");
         assert!(!got.contains("21"), "columns ran together: {got:?}");
     }
 
@@ -852,6 +870,7 @@ mod correctness_tests {
         assert_eq!(convert(r"\frac{1}{23}"), "1/23");
         assert_eq!(convert(r"\sqrt{ab}"), "√(ab)");
         assert_eq!(convert(r"x^\frac{1}{2}"), "x^(1/2)");
+        assert_eq!(convert(r"\frac\sqrt{x}{y}"), "(√x)/y");
     }
     #[test]
     fn indexed_roots_and_accents_keep_meaning() {
@@ -868,4 +887,67 @@ mod correctness_tests {
         let deep = format!("{}x{}", "{".repeat(1000), "}".repeat(1000));
         assert_eq!(convert(&deep), deep);
     }
+}
+
+/// Display math stays separate from Markdown so alignment and fallback source
+/// cannot be interpreted as emphasis, tables, or lists.
+pub(crate) enum MathPart<'a> { Prose(&'a str), Display(&'a str) }
+
+pub(crate) fn math_regions(text: &str) -> (Vec<MathPart<'_>>, Option<usize>) {
+    let mut parts = Vec::new();
+    let mut from = 0;
+    let mut i = 0;
+    while i < text.len() {
+        let rest = &text[i..];
+        if rest.starts_with('`') {
+            let count = rest.bytes().take_while(|b| *b == b'`').count();
+            let delimiter = "`".repeat(count);
+            if let Some(end) = rest[count..].find(&delimiter) {
+                i += count + end + count;
+                continue;
+            }
+            break; // unfinished inline code remains literal
+        }
+        let delimiter = if rest.starts_with("$$") { Some(("$$", "$$", true)) }
+            else if rest.starts_with(r"\[") { Some((r"\[", r"\]", true)) }
+            else if rest.starts_with(r"\(") { Some((r"\(", r"\)", false)) }
+            else if rest.starts_with('$') { Some(("$", "$", false)) }
+            else { None };
+        let found = if let Some((open, close, display)) = delimiter {
+            if let Some(end) = rest[open.len()..].find(close) {
+                let start = i + open.len();
+                let stop = start + end;
+                let next = stop + close.len();
+                if open == "$" && !looks_like_math(&text[start..stop], open) {
+                    i += 1; continue;
+                }
+                if display || text[start..stop].contains(r"\begin{") {
+                    Some((start, stop, next))
+                } else { i = next; continue; }
+            } else if display {
+                parts.push(MathPart::Prose(&text[from..]));
+                return (parts, Some(i));
+            } else { i += open.len(); continue; }
+        } else if rest.starts_with(r"\begin{") {
+            if let Some(env) = crate::latex_layout::environment_at(text, i) {
+                Some((i, env.end, env.end))
+            } else {
+                parts.push(MathPart::Prose(&text[from..]));
+                return (parts, Some(i));
+            }
+        } else { None };
+        if let Some((start, stop, next)) = found {
+            if from < i { parts.push(MathPart::Prose(&text[from..i])); }
+            parts.push(MathPart::Display(&text[start..stop]));
+            from = next; i = next;
+        } else {
+            let c = rest.chars().next().unwrap();
+            i += c.len_utf8();
+            if c == '\\' {
+                if let Some(next) = text[i..].chars().next() { i += next.len_utf8(); }
+            }
+        }
+    }
+    if from < text.len() { parts.push(MathPart::Prose(&text[from..])); }
+    (parts, None)
 }
