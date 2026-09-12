@@ -1,6 +1,6 @@
 [package]
 name = "mycli"
-version = "1.4.0"
+version = "1.5.0"
 edition = "2021"
 license = "MIT"
 description = "Lightweight AI coding CLI — local-first (oMLX), cloud-ready (Kimi, DeepSeek)"
@@ -26,6 +26,7 @@ clap = { version = "4", features = ["derive"] }
 # Terminal
 crossterm = "0.28"
 termimad = "0.30"
+syntect = { version = "5.3", default-features = false, features = ["default-fancy"] }
 unicode-width = { workspace = true }
 similar = { workspace = true }
 

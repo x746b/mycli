@@ -43,6 +43,92 @@ pub fn skin() -> MadSkin {
 /// comes out as bare pipes around tight columns. Everything else goes to
 /// termimad unchanged.
 pub fn render(text: &str, width: usize) -> String {
+    let lines: Vec<&str> = text.split_inclusive('\n').collect();
+    let mut out = String::new();
+    let mut prose = String::new();
+    let mut i = 0;
+    while i < lines.len() {
+        if let Some((marker, count, language)) = fence_open(lines[i]) {
+            out.push_str(&render_prose(&prose, width)); prose.clear();
+            let start = i + 1;
+            i = start;
+            while i < lines.len() && !fence_close(lines[i], marker, count) { i += 1; }
+            out.push_str(&render_code(&lines[start..i].concat(), language, width));
+            if i < lines.len() { i += 1; }
+        } else {
+            prose.push_str(lines[i]); i += 1;
+        }
+    }
+    out.push_str(&render_prose(&prose, width));
+    out
+}
+
+fn fence_open(line: &str) -> Option<(char, usize, &str)> {
+    let line = line.trim_start();
+    let marker = line.chars().next()?;
+    if marker != '`' && marker != '~' { return None; }
+    let count = line.chars().take_while(|c| *c == marker).count();
+    if count < 3 { return None; }
+    let info = line[count..].trim();
+    if marker == '`' && info.contains('`') { return None; }
+    Some((marker, count, info.split_whitespace().next().unwrap_or("")))
+}
+fn fence_close(line: &str, marker: char, count: usize) -> bool {
+    let line = line.trim();
+    line.chars().take_while(|c| *c == marker).count() >= count
+        && line.chars().all(|c| c == marker)
+}
+
+fn render_code(code: &str, language: &str, width: usize) -> String {
+    use std::sync::LazyLock;
+    use syntect::{easy::HighlightLines, highlighting::ThemeSet, parsing::SyntaxSet};
+    use unicode_width::UnicodeWidthChar;
+    static SYNTAXES: LazyLock<SyntaxSet> = LazyLock::new(SyntaxSet::load_defaults_newlines);
+    static THEMES: LazyLock<ThemeSet> = LazyLock::new(ThemeSet::load_defaults);
+    let language = language.to_ascii_lowercase();
+    let token = match language.as_str() {
+        "bash" | "shell" | "zsh" => "sh", "python3" => "py", "javascript" => "js",
+        "c++" => "cpp", "csharp" => "cs", _ => &language,
+    };
+    let syntax = SYNTAXES.find_syntax_by_token(token).unwrap_or_else(|| SYNTAXES.find_syntax_plain_text());
+    let mut highlight = HighlightLines::new(syntax, &THEMES.themes["base16-ocean.dark"]);
+    let color = std::env::var_os("NO_COLOR").is_none() && std::env::var("TERM").as_deref() != Ok("dumb");
+    let inner = width.saturating_sub(4).max(2);
+    let label = crate::ui::truncate(&language.chars().filter(|c| !c.is_control()).collect::<String>(), inner);
+    let mut out = format!("╭─ {}{}╮\n", label, "─".repeat(inner.saturating_sub(crate::ui::display_width(&label))));
+    // Code never passes through math/table repair. Only terminal controls are escaped.
+    let code: String = code.chars().map(|c| if c.is_control() && c != '\n' && c != '\t' { '�' } else { c }).collect();
+    for line in code.split_inclusive('\n') {
+        out.push_str("│ ");
+        let mut column = 0;
+        let ranges = highlight.highlight_line(line, &SYNTAXES).unwrap_or_default();
+        let fallback = [(syntect::highlighting::Style::default(), line)];
+        let ranges = if ranges.is_empty() { &fallback[..] } else { &ranges[..] };
+        for (style, text) in ranges {
+            let fg = style.foreground;
+            let ansi = if color { format!("\x1b[38;2;{};{};{}m", fg.r, fg.g, fg.b) } else { String::new() };
+            out.push_str(&ansi);
+            for ch in text.chars().filter(|c| *c != '\n') {
+                let expanded = if ch == '\t' { " ".repeat(4 - column % 4) } else { ch.to_string() };
+                for c in expanded.chars() {
+                    let w = c.width().unwrap_or(0);
+                    if column + w > inner {
+                        if color { out.push_str("\x1b[0m"); }
+                        out.push_str(&format!("{} │\n│ {}", " ".repeat(inner - column), ansi));
+                        column = 0;
+                    }
+                    out.push(c); column += w;
+                }
+            }
+        }
+        if color { out.push_str("\x1b[0m"); }
+        out.push_str(&format!("{} │\n", " ".repeat(inner.saturating_sub(column))));
+    }
+    out.push_str(&format!("╰{}╯\n", "─".repeat(inner + 2)));
+    out
+}
+
+fn render_prose(text: &str, width: usize) -> String {
     // Maths first: a terminal cannot typeset LaTeX, and leaving it raw buries
     // the answer in backslashes. See `latex::render_math`.
     let text = crate::latex::render_math(text);
@@ -451,11 +537,6 @@ fn open_math_block(text: &str) -> Option<usize> {
     None
 }
 
-fn is_fence(line: &str) -> bool {
-    let t = line.trim_start();
-    t.starts_with("```") || t.starts_with("~~~")
-}
-
 /// Length of the prefix of `buf` that is safe to render now.
 ///
 /// Returns 0 when nothing can be flushed yet. The held-back remainder is
@@ -469,29 +550,34 @@ pub fn safe_prefix_len(buf: &str) -> usize {
     let complete = &buf[..complete_end];
 
     // An unterminated code fence: hold everything from the opening delimiter.
-    let mut in_fence = false;
+    let mut fence: Option<(char, usize)> = None;
+    let mut math_text = complete.as_bytes().to_vec();
     let mut fence_start = 0usize;
     let mut offset = 0usize;
     let mut line_offsets: Vec<usize> = Vec::new();
     for line in complete.split_inclusive('\n') {
         line_offsets.push(offset);
-        if is_fence(line) {
-            if in_fence {
-                in_fence = false;
-            } else {
-                in_fence = true;
-                fence_start = offset;
+        let was_code = fence.is_some();
+        if let Some((marker, count)) = fence {
+            if fence_close(line, marker, count) { fence = None; }
+        } else if let Some((marker, count, _)) = fence_open(line) {
+            fence = Some((marker, count));
+            fence_start = offset;
+        }
+        if was_code || fence.is_some() {
+            for byte in &mut math_text[offset..offset + line.len()] {
+                if *byte != b'\n' { *byte = b' '; }
             }
         }
         offset += line.len();
     }
-    if in_fence {
+    if fence.is_some() {
         return fence_start;
     }
 
     // An unterminated display-math block: hold it, so the delimiters are not
     // rendered as literal text before the closing pair arrives.
-    if let Some(start) = open_math_block(complete) {
+    if let Some(start) = open_math_block(std::str::from_utf8(&math_text).unwrap()) {
         return start;
     }
 
@@ -690,3 +776,48 @@ mod tests {
 
 
 
+
+#[cfg(test)]
+mod code_tests {
+    use super::*;
+    #[test]
+    fn code_is_not_rewritten_as_math_or_tables() {
+        let md = "```sh\necho '$$'\nprintf '| a | b ||---|---||1|2|'\n```\n";
+        assert_eq!(safe_prefix_len(md), md.len());
+        let rendered = crate::ui::strip_ansi(&render(md, 100));
+        assert!(rendered.contains("echo '$$'"));
+        assert!(rendered.contains("| a | b ||---|---||1|2|"));
+    }
+    #[test]
+    fn fences_must_match_type_and_length() {
+        let md = "````python\nx = 1\n```\n~~~\n";
+        assert_eq!(safe_prefix_len(md), 0);
+        let closed = format!("{md}````\n");
+        assert_eq!(safe_prefix_len(&closed), closed.len());
+        let out = crate::ui::strip_ansi(&render(&closed, 80));
+        assert!(out.contains("```") && out.contains("~~~"));
+    }
+    #[test]
+    fn narrow_unicode_code_wraps_without_losing_text() {
+        let out = crate::ui::strip_ansi(&render("~~~unknown\n漢字🦀abcdef123456789\n~~~\n", 14));
+        for line in out.lines() { assert!(crate::ui::display_width(line) <= 14, "{line}"); }
+        let body: String = out.lines().filter(|l| l.starts_with('│')).map(|l| l.trim_matches('│').trim()).collect();
+        assert_eq!(body, "漢字🦀abcdef123456789");
+    }
+    #[test]
+    fn unfinished_code_and_unknown_languages_remain_readable() {
+        let out = crate::ui::strip_ansi(&render("```something-new\n  a = 1\n", 40));
+        assert!(out.contains("  a = 1"));
+        assert!(!out.contains("```"));
+    }
+    #[test]
+    fn python_highlighting_distinguishes_token_categories() {
+        let out = render("```python\nreturn \"hello\" # comment\n```\n", 60);
+        assert!(crate::ui::strip_ansi(&out).contains("return \"hello\" # comment"));
+        if std::env::var_os("NO_COLOR").is_none() && std::env::var("TERM").as_deref() != Ok("dumb") {
+            let colors: std::collections::HashSet<_> = out.split("\x1b[38;2;").skip(1)
+                .filter_map(|part| part.split('m').next()).collect();
+            assert!(colors.len() >= 3, "{out:?}");
+        }
+    }
+}

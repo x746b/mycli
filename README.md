@@ -1,6 +1,6 @@
 # MyCLI
 
-Lightweight AI coding CLI for testing LLM capabilities — especially local models running on [oMLX](https://github.com/jundot/omlx). Cloud providers (Kimi, DeepSeek, Gemini, OpenAI) are supported as first-class fallbacks, and v1.4.0 includes terminal-native cybersecurity benchmarking with structured cloud or Codex grading.
+Lightweight AI coding CLI for testing LLM capabilities — especially local models running on [oMLX](https://github.com/jundot/omlx). Cloud providers (Kimi, DeepSeek, Gemini, OpenAI) are supported as first-class fallbacks, and v1.5.0 includes terminal-native cybersecurity benchmarking with structured cloud or Codex grading.
 
 Screen:
 ```bash
@@ -12,7 +12,7 @@ $ mycli
  | | | | | | |_| | |____| |____| |
  |_| |_| |_|\__, |\_____|______|_|
              __/ |
-            |___/           v1.4.0
+            |___/           v1.5.0
 
   tools [medium]: Read, Write, Bash, Edit, Glob, Grep, WebSearch
   omlx · Qwen3.8-27B · tools:medium · max_turns:30 · /opt/mycli
@@ -76,7 +76,7 @@ mycli -t simple -m RedSage-Qwen3-8B-DPO
 mycli -p redteam -t full -m orcarouter_Qwen3.8-27B-Uncensored-8B "cybersec prompt"    
 ```
 
-**~5MB static binary** | **Rust** | **32 tools** | **3 tool tiers** | **6 personas** | **MCP support** | **Cybersecurity benchmarks** | **Hot-swappable models & providers**
+**Native binary** | **Rust** | **32 tools** | **3 tool tiers** | **6 personas** | **MCP support** | **Cybersecurity benchmarks** | **Hot-swappable models & providers**
 
 ---
 
@@ -802,3 +802,12 @@ configuration diagnostics. Requests have a 30-second deadline and responses a
 replaying the original tool call, to avoid duplicate side effects. Legacy HTTP+SSE
 endpoints (`/sse` with a separate POST endpoint), OAuth discovery, and resumable
 streams are not implemented; configure the server's Streamable HTTP endpoint.
+
+### Fenced code highlighting (1.5.0)
+
+Fenced code now uses language-aware syntax colors, including Python, shell,
+Rust, JavaScript, JSON, and other bundled Syntect syntaxes. Unknown languages
+fall back to plain text. Matching backtick/tilde fences are recognized while
+streaming, code is protected from math/table rewriting, and long lines wrap
+without dropping their contents. `NO_COLOR` or `TERM=dumb` disables fenced-code
+colors. `MYCLI_RAW=1` continues to emit the original Markdown unchanged.
