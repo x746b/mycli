@@ -1,6 +1,6 @@
 # MyCLI
 
-Lightweight AI coding CLI for testing LLM capabilities — especially local models running on [oMLX](https://github.com/jundot/omlx). Cloud providers (Kimi, DeepSeek, Gemini, OpenAI) are supported as first-class fallbacks, and v1.7.0 includes terminal-native cybersecurity benchmarking with structured cloud or Codex grading.
+Lightweight AI coding CLI for testing LLM capabilities — especially local models running on [oMLX](https://github.com/jundot/omlx). Switch between local and cloud models (Kimi, DeepSeek, Gemini, OpenAI), connect MCP tools over stdio or HTTP, and inspect highlighted code and full tool output directly in the terminal.
 
 Screen:
 ```bash
@@ -16,7 +16,7 @@ $ mycli
 
   tools [medium]: Read, Write, Bash, Edit, Glob, Grep, WebSearch
   omlx · Qwen3.8-27B · tools:medium · max_turns:30 · /opt/mycli
-  ctrl+c interrupt · ctrl+d exit · / commands · ctrl+o thinking · ctrl+u clear input
+  ctrl+c interrupt · ctrl+d exit · / commands · ctrl+o thinking · ctrl+t tool output · ctrl+u clear input
 
 ───────────────────────────────────────────────────────────────────────────────────────────────
  › hey
@@ -259,6 +259,7 @@ Supported effort choices follow the [OpenAI model documentation](https://develop
 | `Ctrl+Y` | Restore the text cleared with Ctrl+U |
 | `Esc` | Interrupt the running turn, at any point during generation |
 | `Ctrl+O` | Show/hide reasoning **display** (works at the prompt *and* mid-turn) |
+| `Ctrl+T` | Browse full tool output; queues the viewer while a turn runs |
 | `Ctrl+C` | Interrupt the current turn (twice in quick succession to force exit) |
 | `Ctrl+D` | Exit |
 | `Tab` | Complete slash commands |
@@ -570,6 +571,54 @@ searched, and supporting references/scripts are not automatically loaded.
 
 ---
 
+## Code and tool output
+
+Fenced code uses language-aware syntax colors, wraps long lines, and preserves
+literal code without applying prose formatting. Labels have room to breathe;
+unlabeled blocks use a continuous border:
+
+```text
+╭─ python ─────────────────╮
+│ def greet(name):        │
+│     return f"Hi, {name}" │
+╰─────────────────────────╯
+╭─────────────────────────╮
+│ Plain output goes here. │
+╰─────────────────────────╯
+```
+
+Unknown languages fall back to plain text. `NO_COLOR` or `TERM=dumb` disables
+fenced-code colors; `MYCLI_RAW=1` preserves the original Markdown.
+
+Long tool results stay compact in the transcript:
+
+```text
+  ❯ Bash  cat /tmp/88-lines.txt
+  ⎿ ✓ 88 lines
+    TEST LINE 001
+    …
+    … +82 lines · ctrl+t to view
+```
+
+Press **Ctrl+T** to inspect the captured output without sending more text to the
+model. Scroll with arrows or PageUp/PageDown, jump with Home/End, pan long lines
+with Left/Right, and browse results with `[` / `]`. Close with `q`, Esc, or Ctrl+T;
+your draft prompt is preserved. During a running turn, the viewer opens at the
+next prompt.
+
+**Limits:** model excerpts retain the beginning and end, up to 16 KiB per tool
+result, with further reductions to fit the request. Conservative byte accounting
+includes history, system instructions and tool schemas, reserving `max_tokens`
+plus framing headroom; oversized requests fail locally. Set `context_window` to
+the server's actual limit. This is an estimate, not a model-specific tokenizer.
+Bash capture uses bounded memory; other tools may still buffer data internally.
+
+The viewer keeps 32 result entries. Private `/tmp` archives retain up to 16 MiB
+per stream and 16 recent streams (256 MiB); capped or evicted captures are marked.
+Archives are removed on normal exit; abrupt termination may leave temporary files.
+
+---
+
 ## MCP (Model Context Protocol)
 
 MyCLI connects to MCP servers over stdio or Streamable HTTP transport. Tools are auto-discovered at
@@ -591,6 +640,23 @@ enabled = true
 VAULT_DB = "/path/to/vault.db"
 VAULT_READONLY = "1"
 ```
+
+For a Streamable HTTP server, use its MCP endpoint instead of a command:
+
+```toml
+[mcp_servers.ida-pro]
+url = "http://127.0.0.1:13337/mcp"
+# Optional authentication:
+# bearer_token_env_var = "IDA_MCP_TOKEN"
+# http_headers = { "X-Client" = "mycli" }
+# env_http_headers = { "X-API-Key" = "IDA_API_KEY" }
+```
+
+Run `/tools full` to load servers, then `/mcp verbose` to inspect discovered tools.
+HTTP supports JSON/SSE responses and session renewal without replaying tool calls.
+Requests time out after 30 seconds; responses are capped at 16 MiB. URLs and header
+values are redacted in configuration diagnostics. Redirects, legacy `/sse`
+transports, OAuth discovery, and resumable streams are unsupported.
 
 Stdio fields are `command`, `args`, `env`, `cwd`, and `enabled`. HTTP servers use
 `url`, optional `http_headers`, `env_http_headers`, and `bearer_token_env_var`.
@@ -738,7 +804,7 @@ mycli (CLI binary)
       ├── cersei-agent       Agent builder, agentic loop, auto-compact
       ├── cersei-memory      Memory manager (flat files, CLAUDE.md)
       ├── cersei-hooks       Hook/middleware system
-      └── cersei-mcp         MCP client (JSON-RPC 2.0, stdio)
+      └── cersei-mcp         MCP client (stdio, Streamable HTTP)
 ```
 
 ---
@@ -758,67 +824,3 @@ notification compliance.
 ## License
 
 MIT
-
-### Large output protection (1.3.0)
-
-Bash drains stdout and stderr concurrently with bounded memory. The model receives
-at most 16 KiB per tool result, retaining the beginning and end with an explicit
-truncation marker. This applies to every tool at the agent boundary, including MCP.
-Each request further shares the available input budget across tool results,
-including the newest batch. User text, system instructions, tool calls and schemas
-are included in a conservative serialized-byte check, reserving `max_tokens` for
-the response plus 1,024 tokens for framing. Oversized requests fail locally with
-an actionable message; they are not silently sent to the provider. This is a
-conservative estimate, not a model-specific tokenizer. Set `context_window` to
-the actual server limit and `max_tokens` to the desired response limit.
-Compaction requests are bounded too. Individual tools other than Bash may still
-buffer data internally before the agent applies its result limit.
-
-Bash captures private files under `/tmp` (up to 16 MiB per stream, 16 recent
-streams, at most 256 MiB per process). Larger streams continue draining but the
-archive explicitly reports its cap. Archives are evicted as newer commands run
-and removed at normal CLI shutdown; abrupt termination can leave temporary files.
-Timeouts and cancellation terminate the command's process group on Unix.
-
-### HTTP MCP (1.4.0)
-
-Remote MCP servers use Streamable HTTP, supporting both JSON and SSE POST
-responses, negotiated protocol/session headers, optional authentication, and
-session renewal. Stdio servers keep using their existing configuration.
-
-```toml
-[mcp_servers.ida-pro]
-url = "http://127.0.0.1:13337/mcp"
-# Optional: read a bearer token from the environment.
-# bearer_token_env_var = "IDA_MCP_TOKEN"
-# http_headers = { "X-Client" = "mycli" }
-# env_http_headers = { "X-API-Key" = "IDA_API_KEY" }
-```
-
-Use your server's actual endpoint. `/tools` reloads servers; `/mcp verbose` shows
-discovered tools or connection errors. Header values and URLs are redacted in
-configuration diagnostics. Requests have a 30-second deadline and responses a
-16 MiB limit. Redirects are rejected. Expired sessions are reinitialized without
-replaying the original tool call, to avoid duplicate side effects. Legacy HTTP+SSE
-endpoints (`/sse` with a separate POST endpoint), OAuth discovery, and resumable
-streams are not implemented; configure the server's Streamable HTTP endpoint.
-
-### Fenced code highlighting (1.5.0)
-
-Fenced code now uses language-aware syntax colors, including Python, shell,
-Rust, JavaScript, JSON, and other bundled Syntect syntaxes. Unknown languages
-fall back to plain text. Matching backtick/tilde fences are recognized while
-streaming, code is protected from math/table rewriting, and long lines wrap
-without dropping their contents. `NO_COLOR` or `TERM=dumb` disables fenced-code
-colors. `MYCLI_RAW=1` continues to emit the original Markdown unchanged.
-
-### Full tool output viewer (1.6.0)
-
-Press **Ctrl+T** at the prompt to open the latest completed tool output in a
-scrollable alternate screen. During a running turn, Ctrl+T queues the viewer for
-the next prompt. Use Up/Down, PageUp/PageDown, Home/End to scroll, Left/Right to pan
-long lines, and `[` / `]` to browse earlier results. Close with `q`, Esc, or Ctrl+T;
-the transcript and any partially typed prompt are restored. The viewer retains
-32 result entries. For archived output, the 1.3.0 disk limits still apply; capped
-or evicted archives are explicitly identified. Large non-Bash results are now
-archived before model truncation too. Viewing output never sends it to the LLM.
