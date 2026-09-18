@@ -169,16 +169,16 @@ pub async fn run_agent_streaming(
         if agent.auto_compact && last_input_tokens > 0 {
             let current = agent.messages.lock().clone();
             let before = current.len();
-            if let Some(result) = crate::compact::auto_compact_if_needed(
-                agent.provider.as_ref(),
-                &current,
-                &agent.model.clone().unwrap_or_default(),
-                last_input_tokens,
-                agent.context_window,
-                &mut compact_state,
-            )
-            .await
-            {
+            let model = agent.model.clone().unwrap_or_default();
+            let compacted = tokio::select! {
+                biased;
+                _ = agent.cancel_token.cancelled() => return Err(CerseiError::Cancelled),
+                result = crate::compact::auto_compact_if_needed(
+                    agent.provider.as_ref(), &current, &model, last_input_tokens,
+                    agent.context_window, &mut compact_state,
+                ) => result,
+            };
+            if let Some(result) = compacted {
                 let _ = event_tx
                     .send(AgentEvent::CompactStart {
                         reason: crate::events::CompactReason::ThresholdExceeded,
@@ -242,7 +242,11 @@ pub async fn run_agent_streaming(
             .await;
 
         // Send to provider
-        let stream = agent.provider.complete(request).await?;
+        let stream = tokio::select! {
+            biased;
+            _ = agent.cancel_token.cancelled() => return Err(CerseiError::Cancelled),
+            result = agent.provider.complete(request) => result?,
+        };
         let mut rx = stream.into_receiver();
         let mut accumulator = StreamAccumulator::new();
 
@@ -254,12 +258,15 @@ pub async fn run_agent_streaming(
             .await;
 
         // Process stream events
-        while let Some(event) = rx.recv().await {
-            // Checked per event, not just per turn: a single response can run
-            // for minutes, and an interrupt has to take effect while it does.
-            if agent.cancel_token.is_cancelled() {
-                return Err(CerseiError::Cancelled);
-            }
+        loop {
+            let event = tokio::select! {
+                biased;
+                _ = agent.cancel_token.cancelled() => return Err(CerseiError::Cancelled),
+                event = rx.recv() => match event {
+                    Some(event) => event,
+                    None => break,
+                },
+            };
             match &event {
                 StreamEvent::TextDelta { text, .. } => {
                     let _ = event_tx.send(AgentEvent::TextDelta(text.clone())).await;
@@ -538,6 +545,90 @@ pub async fn run_agent_streaming(
     }
 
     Ok(output)
+}
+
+#[cfg(test)]
+mod cancellation_tests {
+    use super::*;
+    use cersei_provider::{CompletionStream, Provider, ProviderCapabilities};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::sync::Notify;
+    use tokio::time::{timeout, Duration};
+    use tokio_util::sync::CancellationToken;
+
+    struct SilentProvider {
+        wait_before_stream: bool,
+        calls: AtomicUsize,
+        started: Arc<Notify>,
+        disconnected: Arc<Notify>,
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for SilentProvider {
+        fn name(&self) -> &str { "silent-test" }
+        fn context_window(&self, _: &str) -> u64 { 32768 }
+        fn capabilities(&self, _: &str) -> ProviderCapabilities { Default::default() }
+
+        async fn complete(&self, request: CompletionRequest) -> Result<CompletionStream> {
+            if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                self.started.notify_one();
+                if self.wait_before_stream {
+                    return std::future::pending().await;
+                }
+                let (tx, rx) = mpsc::channel(1);
+                let disconnected = self.disconnected.clone();
+                tokio::spawn(async move {
+                    tx.closed().await;
+                    disconnected.notify_one();
+                });
+                return Ok(CompletionStream::new(rx));
+            }
+            // The next turn retains the original prompt and adds the correction.
+            assert_eq!(request.messages.len(), 2);
+            assert_eq!(request.messages[0].get_all_text(), "Original request");
+            assert_eq!(request.messages[1].get_all_text(), "Correction: use another approach");
+            let (tx, rx) = mpsc::channel(8);
+            for event in [
+                StreamEvent::MessageStart { id: "test".into(), model: "test".into() },
+                StreamEvent::ContentBlockStart { index: 0, block_type: "text".into(), id: None, name: None },
+                StreamEvent::TextDelta { index: 0, text: "Corrected answer".into() },
+                StreamEvent::ContentBlockStop { index: 0 },
+                StreamEvent::MessageDelta { stop_reason: Some(StopReason::EndTurn), usage: None },
+                StreamEvent::MessageStop,
+            ] {
+                tx.send(event).await.unwrap();
+            }
+            Ok(CompletionStream::new(rx))
+        }
+    }
+
+    #[tokio::test]
+    async fn cancels_silent_provider_and_accepts_correction_on_next_turn() {
+        for wait_before_stream in [true, false] {
+            let started = Arc::new(Notify::new());
+            let disconnected = Arc::new(Notify::new());
+            let cancel = CancellationToken::new();
+            let mut agent = Agent::builder().provider(SilentProvider {
+                wait_before_stream, calls: AtomicUsize::new(0),
+                started: started.clone(), disconnected: disconnected.clone(),
+            }).cancel_token(cancel.clone()).build().unwrap();
+            let cancel_when_started = async {
+                started.notified().await;
+                cancel.cancel();
+            };
+            let (result, ()) = timeout(Duration::from_secs(2), async {
+                tokio::join!(agent.run("Original request"), cancel_when_started)
+            }).await.expect("Cancellation must not wait for a provider event");
+            assert!(matches!(result, Err(CerseiError::Cancelled)));
+            if !wait_before_stream {
+                timeout(Duration::from_secs(2), disconnected.notified()).await
+                    .expect("Cancelled turn must drop the provider receiver");
+            }
+            agent.set_cancel_token(CancellationToken::new());
+            timeout(Duration::from_secs(2), agent.run("Correction: use another approach"))
+                .await.unwrap().unwrap();
+        }
+    }
 }
 
 #[cfg(test)]

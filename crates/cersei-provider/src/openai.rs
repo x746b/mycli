@@ -351,6 +351,7 @@ impl Provider for OpenAi {
         let client = self.client.clone();
 
         tokio::spawn(async move {
+            let work = async {
             match client.execute(req).await {
                 Ok(response) => {
                     if !response.status().is_success() {
@@ -709,6 +710,14 @@ impl Provider for OpenAi {
                         })
                         .await;
                 }
+            }
+            };
+            // The agent owns the receiver. Dropping it must drop the HTTP
+            // request too, even while waiting for headers or a silent stream.
+            tokio::select! {
+                biased;
+                _ = tx.closed() => {},
+                _ = work => {},
             }
         });
 

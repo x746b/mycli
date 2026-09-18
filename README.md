@@ -2,6 +2,11 @@
 
 Lightweight AI coding CLI for testing LLM capabilities — especially local models running on [oMLX](https://github.com/jundot/omlx). Switch between local and cloud models (Kimi, DeepSeek, Gemini, OpenAI), connect MCP tools over stdio or HTTP, and inspect highlighted code and full tool output directly in the terminal.
 
+**1.9.5:** Ctrl+C and Esc now close the active inference request, including
+during silent reasoning, initial response waits, and context compaction.
+oMLX and DS4 can then cancel server-side generation. Enter a correction at the
+next prompt to continue the conversation.
+
 Screen:
 ```bash
 $ mycli
@@ -12,7 +17,7 @@ $ mycli
  | | | | | | |_| | |____| |____| |
  |_| |_| |_|\__, |\_____|______|_|
              __/ |
-            |___/           v1.9.2
+            |___/           v1.9.5
 
   tools [medium]: Read, Write, Bash, Edit, Glob, Grep, WebSearch
   omlx · Qwen3.8-27B · tools:medium · max_turns:30 · /opt/mycli
@@ -336,6 +341,17 @@ Supported effort choices follow the [OpenAI model documentation](https://develop
 | `Enter` / `Esc` | Confirm / deny an approval dialog |
 
 All pickers use arrow keys, Enter to confirm, Esc to cancel. All switches are hot — model, provider, tool tier, and persona can change mid-session without restarting.
+
+During generation, press **Ctrl+C once** or **Esc** to cancel the request,
+then enter your correction at the next prompt. mycli closes the HTTP stream,
+including while waiting for the first token or during silent reasoning.
+oMLX and DS4 can use that disconnect to abort generation; an in-flight GPU
+operation may finish before the server becomes idle. The correction starts
+a new request with the conversation so far. The interrupted response is not
+added to model history, and actions from earlier tool calls are not undone.
+This cancels generation entirely; it does not force the current response to
+finish its reasoning and immediately produce an answer. Ctrl+O only toggles
+the reasoning display.
 
 ---
 
