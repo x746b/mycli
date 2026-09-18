@@ -888,16 +888,16 @@ def interactive_run() -> int:
     if not suite:
         return 0
     tests = load_suite(suite)
-    categories = picker("Select categories", sorted({category(test) for test in tests}), multiple=True, all_selected=True)
+    categories = picker("Select categories", sorted({category(test) for test in tests}), multiple=True)
     if not categories:
         return 0
     narrowed = select_tests(tests, categories, [])
     areas = picker("Select areas", sorted({area(test) for test in narrowed}),
-                   multiple=True, all_selected=True)
+                   multiple=True)
     if not areas:
         return 0
     narrowed = select_tests(narrowed, [], [], areas)
-    test_ids = picker("Select tests", [str(test["id"]) for test in narrowed], multiple=True, all_selected=True)
+    test_ids = picker("Select tests", [str(test["id"]) for test in narrowed], multiple=True)
     if not test_ids:
         return 0
     timeout_choice = picker("Per-test timeout", ["180 seconds", "120 seconds", "300 seconds", "60 seconds"])
