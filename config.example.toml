@@ -12,6 +12,60 @@ api_key = "omlx-xxxxxxxxxxxxxxxxxxxx"
 # cost_limit = 0.0        # USD per session, 0 = unlimited
 # context_window = 0      # tokens; 0 = ask the server, else guess from the model name
 # show_thinking = true    # stream model reasoning; Ctrl+O toggles at runtime
+# temperature = 0.6       # omitted = server default
+# top_p = 0.95            # optional nucleus sampling cutoff, 0..1
+# min_p = 0.05            # optional minimum relative probability, 0..1
+
+# ─── Named local model profiles ────────────────────────────
+# Usage: mycli --local ds4think  OR  /local [name] in the REPL.
+# /local lists these profiles; /model lists the default server's models.
+# Settings are reloaded from disk each time you use /local.
+# Existing [cloud.ds4*] profiles can be moved here by renaming their tables.
+# A project profile replaces the global profile with the same name.
+#
+# base_url: omitted = top-level local endpoint. Use a LAN URL or SSH tunnel.
+# api_key: omitted = top-level key only when using that same endpoint;
+#          use "" for a server that needs no authentication.
+# model: omitted/empty = detect the first model from this server's /models.
+# max_tokens/max_turns/temperature/top_p/min_p/thinking/tool_tier/persona/show_thinking inherit
+# top-level defaults when omitted. context_window defaults to auto-detection;
+# reasoning_effort defaults to the server's choice, not the previous profile.
+# web_search defaults to false: enable only for oMLX's search extension.
+
+# [local.glm]
+# model = "glm-5.2"
+# max_tokens = 16384
+# temperature = 0.6       # 0..2, subject to the server's supported range
+# tool_tier = "medium"   # auto | simple | medium | full
+# web_search = true      # this profile uses oMLX
+
+# [local.ds4think]
+# base_url = "http://127.0.0.1:8000/v1"
+# api_key = ""
+# model = "deepseek-reasoner"
+# max_tokens = 8192
+# max_turns = 30
+# context_window = 32768 # 0 = ask server, then fall back to model-name estimate
+# reasoning_effort = "max" # supported levels depend on model; default resets
+# temperature = 0.6
+# tool_tier = "full"
+# persona = "code"
+# show_thinking = true
+# web_search = false
+
+# [local.glmfast]
+# base_url = "http://127.0.0.1:8000/v1"
+# api_key = ""
+# model = "glm-5.3-flash-nothink"
+# temperature = 1.0
+# top_p = 0.95
+# min_p = 0.05
+# thinking = false       # model-level control; DS4 accepts this template flag
+# max_tokens = 2048      # response cap, separate from server context size
+# show_thinking = false  # display preference
+# These sampling controls require server support. DS4's chat-completions
+# endpoint accepts them. --mtp and --ctx remain DS4 startup options;
+# mycli's context_window describes capacity, it does not resize the server.
 
 # ─── MCP servers ───────────────────────────────────────────
 # Tools auto-discovered on startup (full tier only)

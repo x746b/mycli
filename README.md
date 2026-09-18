@@ -12,7 +12,7 @@ $ mycli
  | | | | | | |_| | |____| |____| |
  |_| |_| |_|\__, |\_____|______|_|
              __/ |
-            |___/           v1.9.1
+            |___/           v1.9.2
 
   tools [medium]: Read, Write, Bash, Edit, Glob, Grep, WebSearch
   omlx · Qwen3.8-27B · tools:medium · max_turns:30 · /opt/mycli
@@ -118,6 +118,25 @@ api_key = "your-omlx-key"
 # cost_limit = 1.0         # stop agent after $1 cloud spend (0 = unlimited)
 # show_thinking = false    # start with reasoning off (see Reasoning)
 
+# ─── Named local profiles ──────────────────────────────────
+# Select with /local, /local ds4think, or mycli --local ds4think.
+[local.glm]
+model = "glm-5.2"
+temperature = 0.6
+tool_tier = "medium"
+web_search = true          # oMLX-specific extension
+
+[local.ds4think]
+base_url = "http://127.0.0.1:8000/v1"
+api_key = ""              # set your server key if required
+model = "deepseek-reasoner"
+max_tokens = 8192
+max_turns = 30
+context_window = 32768
+reasoning_effort = "max"
+tool_tier = "full"
+show_thinking = true
+
 # ─── MCP servers ───────────────────────────────────────────
 # Tools auto-discovered on startup (full tier only)
 
@@ -167,6 +186,54 @@ built-in preset defaults — that is how you run a newer model than the preset s
 
 Environment variables (`MYCLI_MODEL`, `MYCLI_API_KEY`, `MOONSHOT_API_KEY`, `DEEPSEEK_API_KEY`, `GEMINI_API_KEY`, `OPENAI_API_KEY`, `OPENAI_ADMIN_KEY`) are also supported.
 
+`/local` loads named local profiles from config and rereads them on each switch.
+Profiles can use different servers, including LAN addresses and SSH tunnels.
+To move DS4 profiles out of `/cloud`, rename `[cloud.ds4]`, `[cloud.ds4fast]`,
+and `[cloud.ds4think]` to `[local.ds4]`, `[local.ds4fast]`, and
+`[local.ds4think]`; their existing model, endpoint, key, token limits, context
+window, and reasoning settings work there.
+
+A local profile inherits the top-level endpoint when `base_url` is omitted.
+It inherits the top-level key only for that same endpoint; `api_key = ""`
+explicitly selects no authentication. An empty `model` auto-detects the first
+model on that server. Omitted `max_tokens`, `max_turns`, `temperature`,
+`top_p`, `min_p`, `thinking`, `tool_tier`, `persona`, and `show_thinking` use top-level defaults. Omitted
+`context_window` (or `0`) uses detection, and omitted `reasoning_effort` uses
+the model's default. `temperature` accepts 0–2, subject to server support.
+`web_search` defaults to false for named profiles because it requires oMLX's
+search endpoint. Settings from the previous profile are cleared when switching.
+`/reasoning` also works for local profiles whose model has known reasoning
+levels, including the DeepSeek aliases. Selecting `/local <name>` again
+reloads its saved settings, including reasoning effort.
+Project profiles replace global definitions with the same name. Explicit CLI
+flags override the selected profile, and `--local` conflicts with `--cloud`.
+See [config.example.toml](config.example.toml) for all options.
+
+For servers that support detailed sampling, local profiles also accept
+`top_p` and `min_p` (0–1). Omitted sampling settings are not sent unless a
+top-level default is configured. `thinking = false` explicitly disables
+model-level reasoning through `chat_template_kwargs.enable_thinking`;
+`show_thinking` controls display (and retains the legacy off-at-start behavior
+when `thinking` is unset). An explicit `thinking` value overrides the effort's
+on/off toggle. `--no-thinking` overrides the profile to off.
+
+For example, the DS4 chat-completions endpoint supports this non-thinking
+profile with an explicit response cap:
+
+```toml
+[local.glmfast]
+base_url = "http://127.0.0.1:8000/v1"
+model = "glm-5.3-flash-nothink"
+temperature = 1.0
+top_p = 0.95
+min_p = 0.05
+thinking = false
+max_tokens = 2048
+```
+
+`--mtp` and `--ctx` belong to DS4 startup. mycli's `context_window` describes
+the server's capacity; it does not change the server's allocated context.
+
 ---
 
 ## Usage
@@ -194,6 +261,7 @@ mycli --cloud deepseek -y "refactor main.rs"   # auto-approve tools
 |------|-------------|
 | `-m, --model` | Model name (oMLX model ID or cloud model) |
 | `--cloud <name>` | Use cloud provider (kimi, deepseek, gemini, openai, or config profile) |
+| `--local <name>` | Load a named `[local.<name>]` profile |
 | `--reasoning <level>` | Cloud reasoning effort; `default` uses the model default |
 | `-t, --tools <tier>` | Tool tier: `simple`, `medium`, `full`, or `auto` (default) |
 | `-p, --persona <name>` | Persona: `code` (default), `redteam`, `blueteam`, `data`, `math`, `agentic` |
@@ -215,6 +283,7 @@ mycli --cloud deepseek -y "refactor main.rs"   # auto-approve tools
 | `/model <name>` | Switch to a local oMLX model |
 | `/cloud` | Pick a cloud provider, then reasoning effort for its configured model |
 | `/cloud <name>` | Switch to cloud (e.g. `kimi`, `deepseek`, `gemini`) |
+| `/local [name]` | Pick or load a local profile with its configured endpoint and model settings |
 | `/reasoning [level]` | Pick or set reasoning effort without resetting the conversation; `default` resets the override |
 | `/tools` | Interactive tool tier picker |
 | `/tools <tier>` | Switch tier (`simple` / `medium` / `full`) |

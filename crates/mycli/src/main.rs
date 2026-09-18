@@ -35,6 +35,10 @@ pub struct Cli {
     #[arg(long)]
     pub cloud: Option<String>,
 
+    /// Use a named [local.<name>] model profile
+    #[arg(long, conflicts_with = "cloud")]
+    pub local: Option<String>,
+
     /// Custom API base URL override
     #[arg(long)]
     pub base_url: Option<String>,
@@ -83,7 +87,7 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     let mut cfg = config::load();
-    config::apply_cli_overrides(&cli, &mut cfg);
+    config::apply_cli_overrides(&cli, &mut cfg)?;
 
     if cli.show_config {
         println!("{}", toml::to_string_pretty(&cfg.redacted())?);

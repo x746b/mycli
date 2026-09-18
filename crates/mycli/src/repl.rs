@@ -296,6 +296,7 @@ impl MyHelper {
                 "/model",
                 "/models",
                 "/cloud",
+                "/local",
                 "/bench",
                 "/grade",
                 "/tools",
@@ -436,9 +437,7 @@ fn prompt_line() -> String {
 /// Local servers carry extensions a cloud endpoint does not — model metadata
 /// on `/v1/models`, a web search endpoint — so several decisions turn on it.
 fn is_local_provider(config: &Config) -> bool {
-    config.provider == "omlx"
-        || config.base_url.contains("127.0.0.1")
-        || config.base_url.contains("localhost")
+    config.is_local()
 }
 
 fn build_provider(config: &Config) -> anyhow::Result<(OpenAi, String)> {
@@ -928,7 +927,7 @@ async fn build_agent(config: &Config, cancel_token: CancellationToken) -> anyhow
     // Search comes from the server's own endpoint, so it is only available on
     // a local one — and it is offered below the full tier, since the small
     // local models are exactly the ones that cannot answer from memory.
-    if is_local && tier != "simple" {
+    if is_local && config.web_search && tier != "simple" {
         tool_names.push("WebSearch".into());
         tools.push(Box::new(crate::web_search::OmlxWebSearch::new(
             &config.base_url,
@@ -958,6 +957,11 @@ async fn build_agent(config: &Config, cancel_token: CancellationToken) -> anyhow
     if let Some(tokens) = context_window {
         builder = builder.context_window(tokens);
     }
+    if let Some(temperature) = config.temperature {
+        builder = builder.temperature(temperature);
+    }
+    if let Some(value) = config.top_p { builder = builder.top_p(value); }
+    if let Some(value) = config.min_p { builder = builder.min_p(value); }
     if let Some(effort) = effort {
         builder = builder.reasoning_effort(effort);
     }
@@ -965,8 +969,12 @@ async fn build_agent(config: &Config, cancel_token: CancellationToken) -> anyhow
     // Starting with thinking off means off at the model level too, where the
     // provider can do that — otherwise the model still pays to reason and the
     // output is merely discarded.
-    if !config.show_thinking && is_local_provider(config) {
-        builder = builder.thinking(false);
+    if is_local_provider(config) {
+        if let Some(on) = config.thinking {
+            builder = builder.thinking(on);
+        } else if !config.show_thinking {
+            builder = builder.thinking(false);
+        }
     }
 
     if config.auto_approve {
@@ -1395,6 +1403,7 @@ enum CommandResult {
     Exit,
     SwitchModel(String),
     SwitchCloud(String),
+    SwitchLocal(String),
     SwitchTier(String),
     SwitchPersona(String),
     Thinking(String),
@@ -1447,6 +1456,7 @@ fn handle_command(cmd: &str, args: &str, config: &Config, current_model: &str) -
             eprintln!("  /help              Show this help");
             eprintln!("  /model             Pick local oMLX model");
             eprintln!("  /model <name>      Switch to a local model");
+            eprintln!("  /local [name]      Pick or load a configured local model profile");
             eprintln!("  /cloud             Pick cloud provider and reasoning level");
             eprintln!("  /reasoning [level] Pick or set reasoning effort (default resets it)");
             eprintln!("  /cloud <name>      Switch to cloud (e.g. kimi, deepseek)");
@@ -1475,13 +1485,9 @@ fn handle_command(cmd: &str, args: &str, config: &Config, current_model: &str) -
         }
         "model" | "models" => {
             if args.is_empty() {
-                // Interactive oMLX model picker — always use oMLX endpoint + key
+                // /model always uses the default local endpoint and its key.
                 let fresh = config::load();
-                let base = if config.provider == "omlx" {
-                    &config.base_url
-                } else {
-                    &fresh.base_url
-                };
+                let base = &fresh.base_url;
                 let api_key = if fresh.api_key.is_empty() { "mycli" } else { &fresh.api_key };
                 let models = list_omlx_models(base, api_key);
                 if models.is_empty() {
@@ -1490,7 +1496,7 @@ fn handle_command(cmd: &str, args: &str, config: &Config, current_model: &str) -
                 }
 
                 match interactive_picker(&models, current_model, "Select model") {
-                    Some(selected) if selected != current_model => {
+                    Some(selected) if selected != current_model || config.provider != "omlx" => {
                         CommandResult::SwitchModel(selected)
                     }
                     _ => {
@@ -1520,6 +1526,23 @@ fn handle_command(cmd: &str, args: &str, config: &Config, current_model: &str) -
                 }
             } else {
                 CommandResult::SwitchCloud(args.trim().to_string())
+            }
+        }
+        "local" => {
+            if args.is_empty() {
+                let fresh = config::load();
+                let names: Vec<String> = fresh.local.keys().cloned().collect();
+                if names.is_empty() {
+                    eprintln!("  No local profiles. Add [local.<name>] to ~/.mycli/config.toml");
+                    return CommandResult::Continue;
+                }
+                let current = config.provider.strip_prefix("local:").unwrap_or("");
+                match interactive_picker(&names, current, "Select local") {
+                    Some(name) => CommandResult::SwitchLocal(name),
+                    None => CommandResult::Continue,
+                }
+            } else {
+                CommandResult::SwitchLocal(args.trim().to_string())
             }
         }
         "bench" => {
@@ -1782,8 +1805,14 @@ fn remember_reasoning(config: &mut Config, effort: Option<String>) {
     config.reasoning_effort = effort.clone();
     // Session-only preference; config.toml may supply a persistent default.
     // Store "default" explicitly to override an earlier profile setting.
-    config.cloud.entry(config.provider.clone()).or_default().reasoning_effort =
-        Some(effort.unwrap_or_else(|| "default".into()));
+    if let Some(name) = config.provider.strip_prefix("local:") {
+        if let Some(profile) = config.local.get_mut(name) {
+            profile.reasoning_effort = Some(effort.unwrap_or_else(|| "default".into()));
+        }
+    } else if config.provider != "omlx" {
+        config.cloud.entry(config.provider.clone()).or_default().reasoning_effort =
+            Some(effort.unwrap_or_else(|| "default".into()));
+    }
 }
 
 pub async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
@@ -1876,7 +1905,7 @@ pub async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
     let mut is_first = true;
 
     status::setup();
-    status::set_reasoning(config.reasoning_effort.as_deref(), !is_local_provider(&config));
+    status::set_reasoning(config.reasoning_effort.as_deref(), !is_local_provider(&config) || config.reasoning_effort.is_some());
     status::set_context(&current_model, &config.provider, &config.persona, &config.working_dir, agent.context_window());
     status::draw();
 
@@ -1912,28 +1941,39 @@ pub async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
             match handle_command(cmd, args, &config, &current_model) {
                 CommandResult::Exit => break,
                 CommandResult::SwitchModel(new_model) => {
-                    // Local model switch — set oMLX provider.
-                    config.provider = "omlx".into();
-                    config.base_url = "http://127.0.0.1:8000/v1".into();
-                    config.model = new_model;
-                    // Restore every setting a cloud profile may have
-                    // overwritten. Leaving them behind would apply the old
-                    // provider's limits to the new one — a 400k context window
-                    // claimed for a local model, silently beating the figure
-                    // its server reports.
                     let fresh = config::load();
-                    config.api_key = fresh.api_key;
-                    config.context_window = fresh.context_window;
-                    config.max_tokens = fresh.max_tokens;
-                    config.max_turns = fresh.max_turns;
-                    config.reasoning_effort = fresh.reasoning_effort;
-                    status::reset_tokens();
-                    rebuild_agent(&mut agent, &mut current_model, &config, &mut is_first, &mut renderer).await;
+                    let mut next_config = config.clone();
+                    next_config.restore_model_defaults(&fresh);
+                    next_config.provider = "omlx".into();
+                    next_config.base_url = fresh.base_url;
+                    next_config.api_key = fresh.api_key;
+                    next_config.model = new_model;
+                    if rebuild_agent(&mut agent, &mut current_model, &next_config, &mut is_first, &mut renderer).await {
+                        config = next_config;
+                        render::set_thinking_visible(config.show_thinking);
+                        status::reset_tokens();
+                    }
+                }
+                CommandResult::SwitchLocal(name) => {
+                    let fresh = config::load();
+                    let mut source = config.clone();
+                    source.local = fresh.local.clone();
+                    match source.with_local_profile(&name, &fresh) {
+                        Ok(next_config) => {
+                            if rebuild_agent(&mut agent, &mut current_model, &next_config, &mut is_first, &mut renderer).await {
+                                config = next_config;
+                                render::set_thinking_visible(config.show_thinking);
+                                status::reset_tokens();
+                            }
+                        }
+                        Err(error) => renderer.error(&error.to_string()),
+                    }
                 }
                 CommandResult::SwitchCloud(cloud_name) => {
                     // Resolve and pick on a copy: Esc must leave the active
                     // provider, credentials, effort and conversation untouched.
                     let mut next_config = config.clone();
+                    next_config.restore_model_defaults(&config::load());
                     if cloud_name == "omlx" {
                         // Back to local
                         let fresh = config::load();
@@ -1944,6 +1984,10 @@ pub async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                         next_config.context_window = fresh.context_window;
                         next_config.reasoning_effort = fresh.reasoning_effort;
                     } else if let Some(resolved) = config.resolve_cloud(&cloud_name) {
+                        next_config.temperature = None;
+                        next_config.top_p = None;
+                        next_config.min_p = None;
+                        next_config.thinking = None;
                         next_config.provider = resolved.name;
                         next_config.base_url = resolved.base_url;
                         next_config.api_key = resolved.api_key;
@@ -1983,6 +2027,7 @@ pub async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                         renderer.notice(&format!("reasoning effort → {}", config.reasoning_effort.as_deref().unwrap_or("default")));
                     } else if rebuild_agent(&mut agent, &mut current_model, &next_config, &mut is_first, &mut renderer).await {
                         config = next_config;
+                        render::set_thinking_visible(config.show_thinking);
                         status::reset_tokens();
                     }
                 }
@@ -1999,8 +2044,8 @@ pub async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                     apply_thinking_command(&arg, &mut renderer, &mut agent, &config)
                 }
                 CommandResult::Reasoning(arg) => {
-                    if is_local_provider(&config) {
-                        renderer.notice("Use /thinking on|off for local models. /reasoning configures cloud models.");
+                    if is_local_provider(&config) && cersei_provider::reasoning::levels(&current_model).is_empty() {
+                        renderer.notice("No reasoning levels are known for this model. Use /thinking on|off where supported.");
                         continue;
                     }
                     let effort = if arg.is_empty() {
@@ -2026,7 +2071,7 @@ pub async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                 CommandResult::LaunchBenchmark(args) => launch_benchmark(&args, &mut renderer),
                 CommandResult::Continue => {}
             }
-            status::set_reasoning(config.reasoning_effort.as_deref(), !is_local_provider(&config));
+            status::set_reasoning(config.reasoning_effort.as_deref(), !is_local_provider(&config) || config.reasoning_effort.is_some());
             status::set_context(&current_model, &config.provider, &config.persona, &config.working_dir, agent.context_window());
             status::draw();
             continue;

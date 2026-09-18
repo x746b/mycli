@@ -65,6 +65,29 @@ pub struct CloudProfile {
     pub reasoning_effort: Option<String>,
 }
 
+/// Named settings for an OpenAI-compatible local inference server.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+pub struct LocalProfile {
+    pub base_url: Option<String>,
+    pub api_key: Option<String>,
+    pub model: String,
+    pub max_tokens: Option<u32>,
+    pub max_turns: Option<u32>,
+    pub context_window: Option<u64>,
+    pub reasoning_effort: Option<String>,
+    pub temperature: Option<f32>,
+    pub top_p: Option<f32>,
+    pub min_p: Option<f32>,
+    /// Explicit model-level thinking control, separate from display visibility.
+    pub thinking: Option<bool>,
+    pub tool_tier: Option<String>,
+    pub persona: Option<String>,
+    pub show_thinking: Option<bool>,
+    /// Enable the oMLX-specific search endpoint only on compatible servers.
+    pub web_search: bool,
+}
+
 // ─── MCP server entry ───────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -188,6 +211,16 @@ pub struct Config {
     /// Named cloud provider profiles
     #[serde(default)]
     pub cloud: HashMap<String, CloudProfile>,
+    /// Named local model profiles, selected with /local or --local.
+    pub local: BTreeMap<String, LocalProfile>,
+    pub temperature: Option<f32>,
+    pub top_p: Option<f32>,
+    pub min_p: Option<f32>,
+    /// Explicit model-level thinking control, separate from display visibility.
+    pub thinking: Option<bool>,
+    /// Whether this local server offers the oMLX web-search extension.
+    #[serde(default = "default_true")]
+    pub web_search: bool,
     /// Active persona: "code", "redteam", "blueteam", "data"
     #[serde(default = "default_persona")]
     pub persona: String,
@@ -226,6 +259,12 @@ impl Default for Config {
             mcp: Vec::new(),
             mcp_servers: BTreeMap::new(),
             cloud: HashMap::new(),
+            local: BTreeMap::new(),
+            temperature: None,
+            top_p: None,
+            min_p: None,
+            thinking: None,
+            web_search: true,
             persona: "code".into(),
             show_thinking: true,
             reasoning_effort: None,
@@ -263,6 +302,13 @@ impl Config {
             }
             if !profile.admin_key.is_empty() {
                 profile.admin_key = "<redacted>".into();
+            }
+        }
+        for profile in safe.local.values_mut() {
+            if let Some(key) = &mut profile.api_key {
+                if !key.is_empty() {
+                    *key = "<redacted>".into();
+                }
             }
         }
         let redact_env = |entry: &mut McpEntry| {
@@ -330,6 +376,81 @@ fn builtin_preset(name: &str) -> Option<BuiltinPreset> {
 }
 
 impl Config {
+    pub fn is_local(&self) -> bool {
+        self.provider == "omlx"
+            || self.provider.starts_with("local:")
+            || self.base_url.contains("127.0.0.1")
+            || self.base_url.contains("localhost")
+    }
+
+    /// Reset settings that belong to a model before switching providers.
+    pub fn restore_model_defaults(&mut self, defaults: &Config) {
+        self.max_tokens = defaults.max_tokens;
+        self.max_turns = defaults.max_turns;
+        self.context_window = defaults.context_window;
+        self.reasoning_effort = defaults.reasoning_effort.clone();
+        self.temperature = defaults.temperature;
+        self.top_p = defaults.top_p;
+        self.min_p = defaults.min_p;
+        self.thinking = defaults.thinking;
+        self.tool_tier = defaults.tool_tier.clone();
+        self.persona = defaults.persona.clone();
+        self.show_thinking = defaults.show_thinking;
+        self.web_search = defaults.web_search;
+    }
+
+    pub fn with_local_profile(&self, name: &str, defaults: &Config) -> anyhow::Result<Self> {
+        let profile = self.local.get(name).ok_or_else(|| anyhow::anyhow!(
+            "Unknown local profile '{name}'. Add [local.{name}] to ~/.mycli/config.toml"
+        ))?;
+        if let Some(t) = profile.temperature {
+            anyhow::ensure!(t.is_finite() && (0.0..=2.0).contains(&t),
+                "Local profile '{name}': temperature must be between 0 and 2");
+        }
+        for (field, value) in [("top_p", profile.top_p.or(defaults.top_p)),
+                               ("min_p", profile.min_p.or(defaults.min_p))] {
+            if let Some(value) = value {
+                anyhow::ensure!(value.is_finite() && (0.0..=1.0).contains(&value),
+                    "Local profile '{name}': {field} must be between 0 and 1");
+            }
+        }
+        anyhow::ensure!(profile.max_tokens != Some(0) && profile.max_turns != Some(0),
+            "Local profile '{name}': max_tokens and max_turns must be positive");
+        if let Some(tier) = &profile.tool_tier {
+            anyhow::ensure!(["auto", "simple", "medium", "full"].contains(&tier.as_str()),
+                "Local profile '{name}': tool_tier must be auto, simple, medium, or full");
+        }
+        let mut next = self.clone();
+        next.restore_model_defaults(defaults);
+        next.provider = format!("local:{name}");
+        next.base_url = profile.base_url.as_deref().unwrap_or(&defaults.base_url)
+            .trim_end_matches('/').to_string();
+        anyhow::ensure!(next.base_url.starts_with("http://") || next.base_url.starts_with("https://"),
+            "Local profile '{name}': base_url must start with http:// or https://");
+        // Do not send the default server's credential to a different endpoint.
+        next.api_key = profile.api_key.clone().unwrap_or_else(|| {
+            if next.base_url == defaults.base_url.trim_end_matches('/') {
+                defaults.api_key.clone()
+            } else {
+                String::new()
+            }
+        });
+        next.model = profile.model.clone();
+        next.max_tokens = profile.max_tokens.unwrap_or(defaults.max_tokens);
+        next.max_turns = profile.max_turns.unwrap_or(defaults.max_turns);
+        next.context_window = profile.context_window.unwrap_or(0);
+        next.reasoning_effort = profile.reasoning_effort.clone();
+        next.temperature = profile.temperature.or(defaults.temperature);
+        next.top_p = profile.top_p.or(defaults.top_p);
+        next.min_p = profile.min_p.or(defaults.min_p);
+        next.thinking = profile.thinking.or(defaults.thinking);
+        if let Some(tier) = &profile.tool_tier { next.tool_tier = tier.clone(); }
+        if let Some(persona) = &profile.persona { next.persona = persona.clone(); }
+        next.show_thinking = profile.show_thinking.unwrap_or(defaults.show_thinking);
+        next.web_search = profile.web_search;
+        Ok(next)
+    }
+
     /// Accept both formats. Named tables win for duplicates in the same file.
     pub fn mcp_entries(&self) -> Vec<McpEntry> {
         let mut servers: BTreeMap<String, McpEntry> = self.mcp.iter()
@@ -605,7 +726,13 @@ pub fn load() -> Config {
 
 fn load_toml(path: &Path) -> Option<Config> {
     let content = std::fs::read_to_string(path).ok()?;
-    toml::from_str(&content).ok()
+    match toml::from_str(&content) {
+        Ok(config) => Some(config),
+        Err(_) => {
+            eprintln!("Warning: could not parse {}; check configuration fields and types", path.display());
+            None
+        }
+    }
 }
 
 fn merge(base: &mut Config, overlay: Config) {
@@ -641,6 +768,17 @@ fn merge(base: &mut Config, overlay: Config) {
     if overlay.reasoning_effort.is_some() {
         base.reasoning_effort = overlay.reasoning_effort;
     }
+    if overlay.context_window != defaults.context_window {
+        base.context_window = overlay.context_window;
+    }
+    if overlay.persona != defaults.persona { base.persona = overlay.persona; }
+    if !overlay.show_thinking { base.show_thinking = false; }
+    if !overlay.web_search { base.web_search = false; }
+    if overlay.temperature.is_some() { base.temperature = overlay.temperature; }
+    if overlay.top_p.is_some() { base.top_p = overlay.top_p; }
+    if overlay.min_p.is_some() { base.min_p = overlay.min_p; }
+    if overlay.thinking.is_some() { base.thinking = overlay.thinking; }
+    base.local.extend(overlay.local);
     // Merge whole server definitions by name, independently of input syntax.
     // Project entries (including enabled=false) replace global definitions.
     let mut servers = BTreeMap::new();
@@ -681,13 +819,20 @@ fn apply_env(config: &mut Config) {
     }
 }
 
-pub fn apply_cli_overrides(cli: &Cli, config: &mut Config) {
+pub fn apply_cli_overrides(cli: &Cli, config: &mut Config) -> anyhow::Result<()> {
+    if let Some(name) = &cli.local {
+        *config = config.with_local_profile(name, config)?;
+    }
     if let Some(m) = &cli.model {
         config.model = m.clone();
     }
     if let Some(cloud_name) = &cli.cloud {
         // Try config-defined cloud profile first, then built-in preset
         if let Some(resolved) = config.resolve_cloud(cloud_name) {
+            config.temperature = None;
+            config.top_p = None;
+            config.min_p = None;
+            config.thinking = None;
             config.provider = resolved.name;
             config.base_url = resolved.base_url;
             config.api_key = resolved.api_key;
@@ -742,10 +887,12 @@ pub fn apply_cli_overrides(cli: &Cli, config: &mut Config) {
     }
     if cli.no_thinking {
         config.show_thinking = false;
+        config.thinking = Some(false);
     }
     if let Some(effort) = &cli.reasoning {
         config.reasoning_effort = Some(effort.to_ascii_lowercase());
     }
+    Ok(())
 }
 
 /// Resolve tool tier. "auto" picks based on whether we're using a cloud provider.
@@ -754,9 +901,7 @@ pub fn resolve_tool_tier(config: &Config) -> &str {
         "simple" | "medium" | "full" => &config.tool_tier,
         _ => {
             // Auto: cloud = full, local = medium
-            let is_local = config.provider == "omlx"
-                || config.base_url.contains("127.0.0.1")
-                || config.base_url.contains("localhost");
+            let is_local = config.is_local();
             if is_local { "medium" } else { "full" }
         }
     }
@@ -775,13 +920,13 @@ mod cloud_override_tests {
             reasoning_effort = "high"
         "#).unwrap();
         let cli = Cli::parse_from(["mycli", "--cloud", "openai"]);
-        apply_cli_overrides(&cli, &mut config);
+        apply_cli_overrides(&cli, &mut config).unwrap();
         assert_eq!(config.reasoning_effort.as_deref(), Some("high"));
         let cli = Cli::parse_from(["mycli", "--cloud", "openai", "--reasoning", "default"]);
-        apply_cli_overrides(&cli, &mut config);
+        apply_cli_overrides(&cli, &mut config).unwrap();
         assert_eq!(config.reasoning_effort.as_deref(), Some("default"));
         let cli = Cli::parse_from(["mycli", "--cloud", "gemini"]);
-        apply_cli_overrides(&cli, &mut config);
+        apply_cli_overrides(&cli, &mut config).unwrap();
         assert_eq!(config.reasoning_effort, None);
     }
 
@@ -812,7 +957,7 @@ mod cloud_override_tests {
     #[test]
     fn a_cloud_profile_replaces_the_local_model() {
         let mut config = config_with_local_model();
-        apply_cli_overrides(&Cli::parse_from(["mycli", "--cloud", "deepseek"]), &mut config);
+        apply_cli_overrides(&Cli::parse_from(["mycli", "--cloud", "deepseek"]), &mut config).unwrap();
         assert_eq!(config.model, "deepseek-v4-flash");
         assert_eq!(config.provider, "deepseek");
     }
@@ -823,7 +968,7 @@ mod cloud_override_tests {
         apply_cli_overrides(
             &Cli::parse_from(["mycli", "--cloud", "deepseek", "-m", "deepseek-v4-pro"]),
             &mut config,
-        );
+        ).unwrap();
         assert_eq!(config.model, "deepseek-v4-pro");
     }
 }
@@ -863,6 +1008,148 @@ mod context_window_tests {
 
         let config = config_with(CloudProfile { api_key: "k".into(), ..Default::default() });
         assert_eq!(config.resolve_cloud("openai").unwrap().context_window, None);
+    }
+}
+
+#[cfg(test)]
+mod local_profile_tests {
+    use super::*;
+    use clap::Parser;
+
+    fn configured() -> Config {
+        toml::from_str(r#"
+            api_key = "default-secret"
+            base_url = "http://localhost:9000/v1"
+            model = "default-model"
+            max_tokens = 16000
+            max_turns = 20
+            context_window = 100000
+            [local.ds4]
+            base_url = "http://mac:8000/v1/"
+            api_key = "ds4-secret"
+            model = "deepseek-reasoner"
+            context_window = 32768
+            max_tokens = 8192
+            max_turns = 10
+            reasoning_effort = "max"
+            temperature = 0.4
+            top_p = 0.95
+            min_p = 0.05
+            thinking = false
+            tool_tier = "full"
+            persona = "data"
+            show_thinking = false
+            [local.glm]
+            model = "glm-5.2"
+            [local.remote]
+            base_url = "http://another-server:8000/v1"
+            [local.noauth]
+            api_key = ""
+            [cloud.ds4]
+            base_url = "https://example.invalid/v1"
+            model = "cloud-model"
+        "#).unwrap()
+    }
+
+    #[test]
+    fn local_profiles_apply_settings_and_remain_local_on_lan() {
+        let defaults = configured();
+        let config = defaults.with_local_profile("ds4", &defaults).unwrap();
+        assert_eq!(config.provider, "local:ds4");
+        assert!(config.is_local());
+        assert_eq!(config.base_url, "http://mac:8000/v1");
+        assert_eq!(config.api_key, "ds4-secret");
+        assert_eq!(config.model, "deepseek-reasoner");
+        assert_eq!((config.max_tokens, config.max_turns, config.context_window), (8192, 10, 32768));
+        assert_eq!(config.reasoning_effort.as_deref(), Some("max"));
+        assert_eq!(config.temperature, Some(0.4));
+        assert_eq!(config.top_p, Some(0.95));
+        assert_eq!(config.min_p, Some(0.05));
+        assert_eq!(config.thinking, Some(false));
+        assert_eq!(resolve_tool_tier(&config), "full");
+        assert_eq!(config.persona, "data");
+        assert!(!config.show_thinking);
+        assert!(!config.web_search);
+        assert_eq!(defaults.resolve_cloud("ds4").unwrap().model, "cloud-model");
+    }
+
+    #[test]
+    fn switching_resets_model_settings_and_inherits_default_endpoint() {
+        let defaults = configured();
+        let first = defaults.with_local_profile("ds4", &defaults).unwrap();
+        let second = first.with_local_profile("glm", &defaults).unwrap();
+        assert_eq!(second.base_url, defaults.base_url);
+        assert_eq!(second.api_key, "default-secret");
+        assert_eq!((second.max_tokens, second.max_turns), (16000, 20));
+        assert_eq!(second.context_window, 0);
+        assert_eq!(second.reasoning_effort, None);
+        assert_eq!(second.temperature, None);
+        assert_eq!(second.top_p, None);
+        assert_eq!(second.min_p, None);
+        assert_eq!(second.thinking, None);
+        assert_eq!(second.persona, "code");
+        assert!(second.show_thinking);
+        assert_eq!(resolve_tool_tier(&second), "medium");
+    }
+
+    #[test]
+    fn credentials_are_redacted_and_not_inherited_across_endpoints() {
+        let defaults = configured();
+        for name in ["remote", "noauth"] {
+            assert!(defaults.with_local_profile(name, &defaults).unwrap().api_key.is_empty());
+        }
+        let text = toml::to_string(&defaults.redacted()).unwrap();
+        assert!(!text.contains("default-secret"));
+        assert!(!text.contains("ds4-secret"));
+        assert_eq!(defaults.local["ds4"].api_key.as_deref(), Some("ds4-secret"));
+    }
+
+    #[test]
+    fn project_profiles_replace_global_definitions_by_name() {
+        let mut config = configured();
+        merge(&mut config, toml::from_str(r#"
+            [local.ds4]
+            model = "deepseek-chat"
+            web_search = true
+        "#).unwrap());
+        assert_eq!(config.local.len(), 4);
+        let selected = config.with_local_profile("ds4", &config).unwrap();
+        assert_eq!(selected.model, "deepseek-chat");
+        assert_eq!(selected.max_tokens, 16000);
+        assert!(selected.web_search);
+    }
+
+    #[test]
+    fn cli_flags_override_local_profile_and_reject_conflicting_providers() {
+        let mut config = configured();
+        apply_cli_overrides(&Cli::parse_from([
+            "mycli", "--local", "ds4", "--model", "deepseek-chat", "--max-turns", "5",
+            "--base-url", "http://localhost:1234/v1", "--api-key", "override",
+            "--reasoning", "none", "--tools", "simple", "--persona", "math",
+        ]), &mut config).unwrap();
+        assert_eq!(config.model, "deepseek-chat");
+        assert_eq!(config.base_url, "http://localhost:1234/v1");
+        assert_eq!(config.api_key, "override");
+        assert_eq!(config.max_turns, 5);
+        assert_eq!(config.reasoning_effort.as_deref(), Some("none"));
+        assert_eq!(config.tool_tier, "simple");
+        assert_eq!(config.persona, "math");
+        assert!(Cli::try_parse_from(["mycli", "--local", "ds4", "--cloud", "ds4"]).is_err());
+        let before = config.model.clone();
+        assert!(apply_cli_overrides(&Cli::parse_from(["mycli", "--local", "missing"]), &mut config).is_err());
+        assert_eq!(config.model, before);
+    }
+
+    #[test]
+    fn invalid_profile_settings_are_rejected() {
+        for setting in ["temperature = -0.1", "temperature = 2.1", "temperature = nan",
+                        "top_p = -0.1", "top_p = 1.1", "top_p = nan",
+                        "min_p = -0.1", "min_p = 1.1", "min_p = inf",
+                        "max_tokens = 0", "max_turns = 0", "tool_tier = 'invalid'",
+                        "base_url = 'not-a-url'"] {
+            let config: Config = toml::from_str(&format!("[local.bad]\n{setting}")).unwrap();
+            assert!(config.with_local_profile("bad", &config).is_err(), "{setting}");
+        }
     }
 }
 

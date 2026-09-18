@@ -307,19 +307,10 @@ impl Provider for OpenAi {
             }
         }
 
-        // Model-level reasoning switch. Servers that render a chat template
-        // locally — oMLX, vLLM, SGLang — expose the template's own thinking
-        // flag through `chat_template_kwargs`; that is what actually stops a
-        // Qwen-style model from reasoning, as opposed to hiding the output.
-        // Only sent when a caller asked for it explicitly, since a hosted API
-        // that does not know the field will reject the request.
-        if request.options.get::<bool>("thinking") == Some(false) {
-            body["chat_template_kwargs"] = serde_json::json!({ "enable_thinking": false });
-        }
-
         if let Some(effort) = &effort {
             crate::reasoning::apply_chat(&mut body, &model, effort);
         }
+        apply_generation_options(&mut body, &request.options, restricted)?;
 
         if !request.tools.is_empty() {
             let tools: Vec<serde_json::Value> = request
@@ -727,6 +718,32 @@ impl Provider for OpenAi {
 
 // ─── Builder ─────────────────────────────────────────────────────────────────
 
+fn apply_generation_options(
+    body: &mut serde_json::Value,
+    options: &ProviderOptions,
+    restricted: bool,
+) -> Result<()> {
+    for key in ["top_p", "min_p"] {
+        if let Some(value) = options.get::<f32>(key) {
+            if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+                return Err(CerseiError::Provider(format!("{key} must be between 0 and 1")));
+            }
+            if !restricted {
+                body[key] = serde_json::json!(value);
+            }
+        }
+    }
+    // Local template control. Explicit on/off takes precedence over effort's
+    // thinking toggle, so /thinking off also works after /reasoning high.
+    if let Some(on) = options.get::<bool>("thinking") {
+        body["chat_template_kwargs"] = serde_json::json!({ "enable_thinking": on });
+        if body.get("thinking").is_some() {
+            body["thinking"] = serde_json::json!({ "type": if on { "enabled" } else { "disabled" } });
+        }
+    }
+    Ok(())
+}
+
 #[derive(Default)]
 pub struct OpenAiBuilder {
     api_key: Option<String>,
@@ -771,6 +788,41 @@ impl OpenAiBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sampling_and_thinking_are_explicit_and_validated() {
+        let mut body = serde_json::json!({});
+        let mut options = ProviderOptions::default();
+        apply_generation_options(&mut body, &options, false).unwrap();
+        assert_eq!(body, serde_json::json!({}));
+        options.set("top_p", 0.95_f32);
+        options.set("min_p", 0.05_f32);
+        options.set("thinking", false);
+        apply_generation_options(&mut body, &options, false).unwrap();
+        assert!((body["top_p"].as_f64().unwrap() - 0.95).abs() < 1e-6);
+        assert!((body["min_p"].as_f64().unwrap() - 0.05).abs() < 1e-6);
+        assert_eq!(body["chat_template_kwargs"]["enable_thinking"], false);
+        let mut restricted = serde_json::json!({});
+        apply_generation_options(&mut restricted, &options, true).unwrap();
+        assert!(restricted.get("top_p").is_none());
+        assert!(restricted.get("min_p").is_none());
+        options.set("top_p", 1.1_f32);
+        assert!(apply_generation_options(&mut body, &options, false).is_err());
+    }
+
+    #[test]
+    fn explicit_thinking_switch_overrides_effort_toggle() {
+        let mut body = serde_json::json!({});
+        crate::reasoning::apply_chat(&mut body, "deepseek-chat", "high");
+        let mut options = ProviderOptions::default();
+        options.set("thinking", false);
+        apply_generation_options(&mut body, &options, false).unwrap();
+        assert_eq!(body["thinking"]["type"], "disabled");
+        options.set("thinking", true);
+        apply_generation_options(&mut body, &options, false).unwrap();
+        assert_eq!(body["thinking"]["type"], "enabled");
+        assert_eq!(body["chat_template_kwargs"]["enable_thinking"], true);
+    }
 
     #[test]
     fn restricted_models_use_completion_tokens() {

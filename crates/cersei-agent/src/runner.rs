@@ -210,6 +210,8 @@ pub async fn run_agent_streaming(
             .unwrap_or_else(|| "claude-sonnet-4-6".to_string());
 
         let mut options = ProviderOptions::default();
+        if let Some(value) = agent.top_p { options.set("top_p", value); }
+        if let Some(value) = agent.min_p { options.set("min_p", value); }
         if let Some(effort) = &agent.reasoning_effort {
             options.set("reasoning_effort", effort);
         }

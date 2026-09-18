@@ -72,6 +72,8 @@ pub struct Agent {
     max_turns: u32,
     max_tokens: u32,
     temperature: Option<f32>,
+    top_p: Option<f32>,
+    min_p: Option<f32>,
     thinking_budget: Option<u32>,
     /// Model-level reasoning switch. `None` leaves it to the model's default;
     /// `Some(false)` asks the provider to turn reasoning off outright, which is
@@ -232,6 +234,8 @@ pub struct AgentBuilder {
     max_turns: u32,
     max_tokens: u32,
     temperature: Option<f32>,
+    top_p: Option<f32>,
+    min_p: Option<f32>,
     thinking_budget: Option<u32>,
     thinking_enabled: Option<bool>,
     reasoning_effort: Option<String>,
@@ -263,6 +267,8 @@ impl Default for AgentBuilder {
             max_turns: 10,
             max_tokens: 16384,
             temperature: None,
+            top_p: None,
+            min_p: None,
             thinking_budget: None,
             thinking_enabled: None,
             reasoning_effort: None,
@@ -328,6 +334,18 @@ impl AgentBuilder {
 
     pub fn temperature(mut self, t: f32) -> Self {
         self.temperature = Some(t);
+        self
+    }
+
+    /// Nucleus sampling cutoff; omitted keeps the provider default.
+    pub fn top_p(mut self, value: f32) -> Self {
+        self.top_p = Some(value);
+        self
+    }
+
+    /// Minimum relative sampling probability, for supporting local servers.
+    pub fn min_p(mut self, value: f32) -> Self {
+        self.min_p = Some(value);
         self
     }
 
@@ -456,6 +474,8 @@ impl AgentBuilder {
             max_turns: self.max_turns,
             max_tokens: self.max_tokens,
             temperature: self.temperature,
+            top_p: self.top_p,
+            min_p: self.min_p,
             thinking_budget: self.thinking_budget,
             thinking_enabled: self.thinking_enabled,
             reasoning_effort: self.reasoning_effort,
