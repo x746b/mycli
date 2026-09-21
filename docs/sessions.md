@@ -1,4 +1,4 @@
-# Session history and global memory — MyCLI 1.9.8
+# Session history and global memory — MyCLI 2.0.0
 
 ## Storage
 

@@ -842,7 +842,7 @@ async fn build_agent(config: &Config, prompts: &crate::prompts::Prompts, skills:
             tool_names.push(format!("mcp {name}: {} tools", names.len()));
         }
     }
-    eprintln!("  \x1b[90mtools [{}]: {}\x1b[0m", tier, tool_names.join(", "));
+    eprintln!("  {DIM}tools [{}]: {}\x1b[0m", tier, tool_names.join(", "));
 
     let mut builder = Agent::builder()
         .provider(provider)
@@ -1015,6 +1015,7 @@ async fn run_prompt(
                     _ => None,
                 };
                 status::record_turn(&usage, timing);
+                if usage.input_tokens == 0 { status::update_context_estimate(agent.context_estimate()); }
                 request_at = None;
             }
             // Compaction rewrites the conversation and costs a model call, so
@@ -1080,7 +1081,7 @@ fn show_openai_spend(client: &reqwest::blocking::Client, resolved: &crate::confi
 
     if resolved.admin_key.is_empty() {
         eprintln!(
-            "{LABEL}  \x1b[90mneeds an admin key — set admin_key in [cloud.openai] \
+            "{LABEL}  {DIM}needs an admin key — set admin_key in [cloud.openai] \
 or OPENAI_ADMIN_KEY\x1b[0m"
         );
         return;
@@ -1179,7 +1180,7 @@ or OPENAI_ADMIN_KEY\x1b[0m"
         None => {
             eprintln!(
                 "{LABEL}  {sym}{spend:.2} {currency} spent since {since_label}  \
-\x1b[90m(no balance API — set credits/credits_since for remaining)\x1b[0m{note}"
+{DIM}(no balance API — set credits/credits_since for remaining)\x1b[0m{note}"
             );
         }
     }
@@ -1297,7 +1298,7 @@ fn show_cloud_balances_blocking(config: &Config) {
     }
 
     if !found_any {
-        eprintln!("  \x1b[90mNo cloud providers with balance API found.");
+        eprintln!("  {DIM}No cloud providers with balance API found.");
         eprintln!("  Supported: kimi/moonshot, deepseek, openai. Set API keys to enable.\x1b[0m");
     }
 }
@@ -1406,7 +1407,7 @@ fn handle_command(cmd: &str, args: &str, config: &Config, current_model: &str, p
                 let api_key = if fresh.api_key.is_empty() { "mycli" } else { &fresh.api_key };
                 let models = list_omlx_models(base, api_key);
                 if models.is_empty() {
-                    eprintln!("  \x1b[90mCould not fetch oMLX model list from {base}\x1b[0m");
+                    eprintln!("  {DIM}Could not fetch oMLX model list from {base}\x1b[0m");
                     return CommandResult::Continue;
                 }
 
@@ -1415,7 +1416,7 @@ fn handle_command(cmd: &str, args: &str, config: &Config, current_model: &str, p
                         CommandResult::SwitchModel(selected)
                     }
                     _ => {
-                        eprintln!("  \x1b[90mCancelled\x1b[0m");
+                        eprintln!("  {DIM}Cancelled\x1b[0m");
                         CommandResult::Continue
                     }
                 }
@@ -1428,14 +1429,14 @@ fn handle_command(cmd: &str, args: &str, config: &Config, current_model: &str, p
                 // Interactive cloud picker
                 let clouds = config.available_clouds();
                 if clouds.is_empty() {
-                    eprintln!("  \x1b[90mNo cloud profiles. Add [cloud.<name>] to ~/.config/mycli/config.toml\x1b[0m");
+                    eprintln!("  {DIM}No cloud profiles. Add [cloud.<name>] to ~/.config/mycli/config.toml\x1b[0m");
                     return CommandResult::Continue;
                 }
                 let current_cloud = if config.provider != "omlx" { &config.provider } else { "" };
                 match interactive_picker(&clouds, current_cloud, "Select cloud") {
                     Some(selected) => CommandResult::SwitchCloud(selected),
                     None => {
-                        eprintln!("  \x1b[90mCancelled\x1b[0m");
+                        eprintln!("  {DIM}Cancelled\x1b[0m");
                         CommandResult::Continue
                     }
                 }
@@ -1484,7 +1485,7 @@ fn handle_command(cmd: &str, args: &str, config: &Config, current_model: &str, p
                         CommandResult::SwitchTier(selected)
                     }
                     _ => {
-                        eprintln!("  \x1b[90mCancelled\x1b[0m");
+                        eprintln!("  {DIM}Cancelled\x1b[0m");
                         CommandResult::Continue
                     }
                 }
@@ -1495,7 +1496,7 @@ fn handle_command(cmd: &str, args: &str, config: &Config, current_model: &str, p
                         CommandResult::SwitchTier(tier.to_string())
                     }
                     _ => {
-                        eprintln!("  \x1b[90mUnknown tier '{tier}'. Use simple, medium, or full.\x1b[0m");
+                        eprintln!("  {DIM}Unknown tier '{tier}'. Use simple, medium, or full.\x1b[0m");
                         CommandResult::Continue
                     }
                 }
@@ -1584,7 +1585,7 @@ fn handle_command(cmd: &str, args: &str, config: &Config, current_model: &str, p
                         CommandResult::SwitchPersona(selected)
                     }
                     _ => {
-                        eprintln!("  \x1b[90mCancelled\x1b[0m");
+                        eprintln!("  {DIM}Cancelled\x1b[0m");
                         CommandResult::Continue
                     }
                 }
@@ -1594,7 +1595,7 @@ fn handle_command(cmd: &str, args: &str, config: &Config, current_model: &str, p
                     CommandResult::SwitchPersona(name.to_string())
                 } else {
                     let names = prompts.names();
-                    eprintln!("\x1b[90mUnknown persona '{name}'. Available: {}\x1b[0m", names.join(", "));
+                    eprintln!("{DIM}Unknown persona '{name}'. Available: {}\x1b[0m", names.join(", "));
                     CommandResult::Continue
                 }
             }
@@ -1608,7 +1609,7 @@ fn handle_command(cmd: &str, args: &str, config: &Config, current_model: &str, p
         }
         "exit" | "quit" | "q" => CommandResult::Exit,
         _ => {
-            eprintln!("\x1b[90mUnknown command: /{cmd}. Type /help.\x1b[0m");
+            eprintln!("{DIM}Unknown command: /{cmd}. Type /help.\x1b[0m");
             CommandResult::Continue
         }
     }
@@ -1638,7 +1639,7 @@ fn apply_thinking_command(
         render::set_thinking_visible(on);
         if !switchable {
             renderer.notice(&format!(
-                "reasoning {} \x1b[90m(display only — use /reasoning to set effort on {})\x1b[0m",
+                "reasoning {} {DIM}(display only — use /reasoning to set effort on {})\x1b[0m",
                 if on { "on" } else { "off" },
                 config.provider
             ));
@@ -1654,7 +1655,7 @@ fn apply_thinking_command(
             None => "model level, if this model reasons",
         };
         renderer.notice(&format!(
-            "reasoning {} \x1b[90m({note})\x1b[0m",
+            "reasoning {} {DIM}({note})\x1b[0m",
             if on { "on" } else { "off" }
         ));
     };
@@ -1698,7 +1699,7 @@ async fn rebuild_agent(
             *current_model = resolved.clone();
             *is_first = true;
             eprintln!(
-                "  \x1b[32mSwitched to {resolved}\x1b[0m \x1b[90m({})\x1b[0m",
+                "  \x1b[32mSwitched to {resolved}\x1b[0m {DIM}({})\x1b[0m",
                 config.provider
             );
             true

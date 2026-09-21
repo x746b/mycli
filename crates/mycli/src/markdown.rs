@@ -24,13 +24,13 @@ pub fn skin() -> MadSkin {
 
     // Tables: rounded borders in grey, so the data reads louder than the box.
     skin.table_border_chars = ROUNDED_TABLE_BORDER_CHARS;
-    skin.table.set_fg(Color::DarkGrey);
+    skin.table.set_fg(Color::AnsiValue(244));
 
     skin.bullet = StyledChar::from_fg_char(Color::Cyan, '•');
-    skin.quote_mark = StyledChar::from_fg_char(Color::DarkGrey, '│');
+    skin.quote_mark = StyledChar::from_fg_char(Color::AnsiValue(244), '│');
     // The default rule is a heavy full-width run of `―`, which dominates the
     // transcript. A thin grey line separates just as well.
-    skin.horizontal_rule = StyledChar::from_fg_char(Color::DarkGrey, '─');
+    skin.horizontal_rule = StyledChar::from_fg_char(Color::AnsiValue(244), '─');
 
     skin
 }

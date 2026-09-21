@@ -154,6 +154,7 @@ def test_menu(server):
             wait_for("effort:low")
             command("first greeting")
             wait_for("mock complete")
+            wait_for("ctx 0.0%/1.1M")
             command("/reasoning")
             wait_for("Select reasoning level for gpt-5.6-luna")
             tm("send-keys", "-t", "test", "Down", "Down", "Enter")

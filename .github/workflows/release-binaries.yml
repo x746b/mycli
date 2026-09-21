@@ -4,9 +4,14 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing release tag to build
+        description: Release tag/version to build
         required: true
-        default: v1.1.0
+        default: v2.0.0
+        type: string
+      source_ref:
+        description: Optional full commit SHA (defaults to the release tag)
+        required: false
+        default: ''
         type: string
       platform:
         description: Platform to build (or all)
@@ -61,6 +66,7 @@ jobs:
     timeout-minutes: 40
     env:
       RELEASE_TAG: ${{ inputs.tag }}
+      SOURCE_REF: ${{ inputs.source_ref }}
       BUILD_PLATFORM: ${{ matrix.platform }}
       BUILD_TARGET: ${{ matrix.target }}
       MACOSX_DEPLOYMENT_TARGET: "13.0"
@@ -68,10 +74,12 @@ jobs:
     steps:
       - name: Validate release tag
         shell: bash
-        run: '[[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]'
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ -z "$SOURCE_REF" || "$SOURCE_REF" =~ ^[0-9a-f]{40}$ ]]
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: refs/tags/${{ inputs.tag }}
+          ref: ${{ inputs.source_ref || format('refs/tags/{0}', inputs.tag) }}
           persist-credentials: false
       - name: Install Linux build dependencies
         if: runner.os == 'Linux'
@@ -85,11 +93,11 @@ jobs:
           rustup default stable
           rustup target add "$BUILD_TARGET"
           rustc -vV
-      - name: Build and test tagged source
+      - name: Build and test release source
         shell: bash
         run: |
           cargo generate-lockfile
-          cargo test --locked -p mycli -p cersei-provider --target "$BUILD_TARGET"
+          cargo test --locked -p mycli -p cersei-provider -p cersei-agent -p cersei-memory -p cersei-tools --target "$BUILD_TARGET"
           cargo build --locked --release -p mycli --target "$BUILD_TARGET"
       - name: Strip, verify, and package
         shell: bash
@@ -110,6 +118,7 @@ jobs:
           test "$("dist/$package/mycli" --version)" = "mycli ${RELEASE_TAG#v}"
           cp README.md config.example.toml system-prompts.toml skills-internal.toml Cargo.lock "dist/$package/"
           cp -R bench "dist/$package/bench"
+          cp -R docs "dist/$package/docs"
           test -x "dist/$package/bench/bench.py"
           python3 "dist/$package/bench/bench.py" --help >/dev/null
           {

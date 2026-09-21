@@ -11,7 +11,8 @@ use unicode_width::UnicodeWidthStr;
 pub const RESET: &str = "\x1b[0m";
 pub const BOLD: &str = "\x1b[1m";
 pub const ITALIC: &str = "\x1b[3m";
-pub const DIM: &str = "\x1b[90m";
+// Use the 256-color grayscale ramp: ANSI bright-black can be teal in terminal themes.
+pub const DIM: &str = "\x1b[38;5;244m";
 pub const ACCENT: &str = "\x1b[36m";
 pub const GREEN: &str = "\x1b[32m";
 pub const RED: &str = "\x1b[31m";

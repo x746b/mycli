@@ -1,27 +1,6 @@
 # MyCLI
 
-Lightweight AI coding CLI for testing LLM capabilities — especially local models running on [oMLX](https://github.com/jundot/omlx). Switch between local and cloud models (Kimi, DeepSeek, Gemini, OpenAI), connect MCP tools over stdio or HTTP, and inspect highlighted code and full tool output directly in the terminal.
-
-**1.9.8:** Resumable sessions now retain an append-only transcript and active-context
-checkpoint. `/sessions rename` assigns names; `/quit` asks whether to keep the session.
-Global `MEMORY.md`, `/remember`, and manual `/compact` are available, with improved
-automatic compaction and model-specific context accounting.
-
-**1.9.7:** `/skill` now lists and runs internal and external skills directly.
-Edit internal templates in `~/.config/mycli/skills-internal.toml`; add search roots
-with `skill_paths`, and refresh with `/skill reload`. Claude-style names and
-nested skill discovery now use the same catalog as the full-tier `Skill` tool.
-
-**1.9.6:** System prompts and personas are editable in `system-prompts.toml`, with
-an empty Neutral persona and `/prompts path|reload`. Configuration now uses
-`~/.config/mycli` (`XDG_CONFIG_HOME` supported), with legacy `.mycli` fallback.
-Tier style can be suppressed per persona or model. Local `/reasoning` now supports
-Cold-Fusion modes and configurable profile levels; `deepseek-flash` is recognized.
-
-**1.9.5:** Ctrl+C and Esc now close the active inference request, including
-during silent reasoning, initial response waits, and context compaction.
-oMLX and DS4 can then cancel server-side generation. Enter a correction at the
-next prompt to continue the conversation.
+A lightweight AI coding CLI and harness for testing LLM capabilities — especially those of local models running on [oMLX](https://github.com/jundot/omlx) and [DS4](https://github.com/antirez/ds4). Switch between local and cloud models (Kimi, DeepSeek, Gemini, OpenAI), connect MCP tools over stdio or HTTP, and inspect highlighted code and full tool output directly in the terminal.
 
 Screen:
 ```bash
@@ -33,9 +12,10 @@ $ mycli
  | | | | | | |_| | |____| |____| |
  |_| |_| |_|\__, |\_____|______|_|
              __/ |
-            |___/           v1.9.8
+            |___/           v2.0.0
 
   tools [medium]: Read, Write, Bash, Edit, Glob, Grep, WebSearch
+  Session: Untitled session (891086a4-eb38-4b43-8270-0a142919db7a)
   omlx · Qwen3.8-27B · tools:medium · max_turns:30 · /opt/mycli
   ctrl+c interrupt · ctrl+d exit · / commands · ctrl+o thinking · ctrl+t tool output · ctrl+u clear input
 
@@ -50,10 +30,28 @@ $ mycli
 
 ───────────────────────────────────────────────────────────────────────────────────────────────
 /opt/mycli (main)
-↑2.9k ↓29 · pp 2381 t/s · tg 153 t/s · ctx 1.1%/262.1k · code · think:on     (omlx) Qwen3.8-27B
+↑1.9k ↓29 · pp 2381 t/s · tg 153 t/s · ctx 1.1%/262.1k · code · think:on     (omlx) Qwen3.8-27B
 ```
 
-Cloud inference providers supported :
+
+Local models with tuned profiles:
+```bash
+───────────────────────────────────────────────────────────────────────────────────────────────
+ › /local
+───────────────────────────────────────────────────────────────────────────────────────────────
+  Select local (2/9) · ↑↓ select, Enter confirm, Esc cancel
+    coldfusion
+  ▸ coldfusion-heretic
+    ds4
+    ds4fast
+    ds4think
+    gemma4
+    glm
+    glmfast
+    qwen36
+```
+
+Cloud inference providers with reasoning:
 ```bash
 ───────────────────────────────────────────────────────────────────────────────────────────────
  › /cloud
@@ -74,7 +72,8 @@ Cloud inference providers supported :
     Max — highest effort, more token usage
 ```
 
-MyCLI supports 3 tool tiers including MCP in "full"
+
+MyCLI supports three tool tiers, with MCP available in the `full` tier:
 ```bash
 ───────────────────────────────────────────────────────────────────────────────────────────────
  › /tools
@@ -84,17 +83,20 @@ MyCLI supports 3 tool tiers including MCP in "full"
     medium (active)
   ▸ full 
 
-  tools [full]: Read, Write, Bash, Edit, Glob, Grep, WebFetch, Skill, WebSearch,
-  mcp command-vault: 19 tools, mcp cve-lookup: 8 tools
+ tools [full]: Read, Write, Bash, Edit, Glob, Grep, WebFetch, Skill, WebSearch, 
+ mcp caido: 66 tools, mcp command-vault: 20 tools, mcp cve-lookup: 8 tools, mcp ida-headless: 66 tools
+
+Switched to mlx-community_Qwen3.8-Flash-Next-oQ5e-mtp (omlx)
 ```
 
-Single shoots:
+
+Single-shot examples:
 ```bash
 # single-shot with tiny model and simple toolset:
 mycli -t simple -m RedSage-Qwen3-8B-DPO         
 
 # offensive security persona with full toolset support and bigger model
-mycli -p redteam -t full -m orcarouter_Qwen3.8-27B-Uncensored-8B "cybersec prompt"    
+mycli -p redteam -t full -m orcarouter_Qwen3.8-27B-Uncensored "cybersec prompt"    
 ```
 
 **Native binary** | **Rust** | **32 tools** | **3 tool tiers** | **Editable personas** | **MCP support** | **Cybersecurity benchmarks** | **Hot-swappable models & providers**
@@ -204,8 +206,8 @@ credits_since = "2026-08-01"    # the date that figure was true
 
 ```
 
-For `kimi-think`, `deepseek`, `deepseek-think` and `gemini`; add
-`max_tokens` to any profile to override. `model` and `max_tokens` override the
+For `kimi-think`, `deepseek`, `deepseek-think`, and `gemini`, add
+`max_tokens` to a profile to override its output limit. `model` and `max_tokens` override the
 built-in preset defaults — that is how you run a newer model than the preset ships with.
 
 Environment variables (`MYCLI_MODEL`, `MYCLI_API_KEY`, `MOONSHOT_API_KEY`, `DEEPSEEK_API_KEY`, `GEMINI_API_KEY`, `OPENAI_API_KEY`, `OPENAI_ADMIN_KEY`) are also supported.
@@ -220,15 +222,18 @@ window, and reasoning settings work there.
 A local profile inherits the top-level endpoint when `base_url` is omitted.
 It inherits the top-level key only for that same endpoint; `api_key = ""`
 explicitly selects no authentication. An empty `model` auto-detects the first
-model on that server. Omitted `max_tokens`, `max_turns`, `temperature`,
-`top_p`, `min_p`, `thinking`, `tool_tier`, `persona`, and `show_thinking` use top-level defaults. Omitted
-`context_window` (or `0`) uses detection, and omitted `reasoning_effort` uses
-the model's default. `temperature` accepts 0–2, subject to server support.
+model on that server. 
+
+Omitted `max_tokens`, `max_turns`, `temperature`, `top_p`, `min_p`, `thinking`, `tool_tier`, `persona`, and `show_thinking` use top-level defaults. 
+Omitted `context_window` (or `0`) uses detection, and omitted `reasoning_effort` uses the model's default. `temperature` accepts 0–2, subject to server support.
+
 `web_search` defaults to false for named profiles because it requires oMLX's
 search endpoint. Settings from the previous profile are cleared when switching.
+
 `/reasoning` also works for local profiles whose model has known reasoning
 levels, including the DeepSeek aliases. Selecting `/local <name>` again
 reloads its saved settings, including reasoning effort.
+
 Project profiles replace global definitions with the same name. Explicit CLI
 flags override the selected profile, and `--local` conflicts with `--cloud`.
 See [config.example.toml](config.example.toml) for all options.
@@ -260,9 +265,9 @@ the server's capacity; it does not change the server's allocated context.
 
 ---
 
-## Usage
+## Usage with the oMLX backend
 
-### oMLX backend — local LLM inference
+### Local LLM inference
 
 ```bash
 omlx serve --model-dir ~/models --paged-ssd-cache-dir ~/.omlx/cache --port 8000
@@ -278,6 +283,9 @@ mycli -t simple                                # minimal tools for small models
 mycli "find the error in ./test.rs and fix it" # single-shot
 mycli --cloud deepseek -y "refactor main.rs"   # auto-approve tools
 ```
+
+
+
 
 ### CLI flags
 
@@ -391,7 +399,7 @@ request settings, so compare controls in a fresh conversation.
 | `←` `→` / `Tab` | Move between options in an approval dialog |
 | `Enter` / `Esc` | Confirm / deny an approval dialog |
 
-All pickers use arrow keys, Enter to confirm, Esc to cancel. All switches are hot — model, provider, tool tier, and persona can change mid-session without restarting.
+All pickers use arrow keys to navigate, Enter to confirm, and Esc to cancel. All switches are hot — model, provider, tool tier, and persona can change mid-session without restarting.
 
 During generation, press **Ctrl+C once** or **Esc** to cancel the request,
 then enter your correction at the next prompt. mycli closes the HTTP stream,
@@ -416,7 +424,7 @@ Designed to match tool complexity to model capability:
 | **medium** | + Edit, Glob, Grep, WebSearch | 24B+ models — structured tools, edit tolerance helps |
 | **full** | + WebFetch, Skill, MCP tools | bigger local and cloud models — full power |
 
-**Auto-detection:** local providers default to `medium`, cloud defaults to `full`.
+**Auto-detection:** local providers default to `medium`; cloud providers default to `full`.
 
 The system prompt adapts to the tier — small models only see descriptions of tools they actually have access to. MCP servers start on `full` only.
 
@@ -459,7 +467,7 @@ suppresses style for `*cold-fusion*`. An external catalog's omitted `[style]` ha
 additional suppression rules. Environment, memory, project instructions, and optional
 WebSearch guidance still form part of the system prompt.
 
-Successful reload resets conversation, just like switching personas. Failed parsing
+A successful reload resets the conversation, just like switching personas. Failed parsing
 or agent rebuilding keeps the previous active prompts. Existing persona wording is
 preserved; see [the modernization proposal](docs/persona-modernization.md) for an
 optional replacement catalog and evaluation plan.
@@ -496,8 +504,8 @@ produced none.
 ### Interrupting
 
 **Esc** cancels the turn in flight — mid-generation, not just between steps —
-and the session carries on with its history intact. Ctrl+C does the same, and
-twice in quick succession force-exits.
+and the session carries on with its history intact. Ctrl+C does the same; pressing
+it twice in quick succession forces an exit.
 
 Keys pressed while the model is working are not lost: anything typed during a
 turn is replayed into the next prompt, so typing ahead still works.
@@ -519,17 +527,53 @@ Anything needing approval opens a dialog showing the *actual* request — the
 full command for Bash, a line diff for Edit, a content preview and byte count
 for Write — so a call can be judged without guessing at it:
 
-```
-╭─ ✎  Edit ──────────────────────────────────────────────────╮
-│ ~/opt/mycli/bin/parser.py                                  │
-│                                                            │
-│ -     assert evaluate('-(2+3) * -(4-1)') == -15.0          │
-│ +     assert evaluate('-(2+3) * -(4-1)') == 15.0           │
-│       print('ok')                                          │
-│                                                            │
-│ modifies files · approval required                         │
-╰────────────────────────────────────────────────────────────╯
-   Yes   Yes, don't ask again   No    ←→ move · enter confirm · esc deny
+```rust
+╭─ ✎  Write ───────────────────────────────────────────────────────────────────────────────────╮
+│ /tmp/dijkstra.rs                                                                             │
+│ 44 lines · 1280 bytes                                                                        │
+│                                                                                              │
+│ + use std::cmp::Reverse;                                                                     │
+│ + use std::collections::{BinaryHeap, HashMap};                                               │
+│ +                                                                                            │
+│ + type Graph = HashMap<usize, Vec<(usize, i64)>>;                                            │
+│ +                                                                                            │
+│ + pub fn dijkstra(graph: &Graph, start: usize) -> HashMap<usize, i64> {                      │
+│ +     let mut dist: HashMap<usize, i64> = HashMap::new();                                    │
+│ +     let mut heap = BinaryHeap::new();                                                      │
+│ +                                                                                            │
+│ +     dist.insert(start, 0);                                                                 │
+│ +     heap.push(Reverse((0i64, start)));                                                     │
+│ +                                                                                            │
+│   … 32 more lines                                                                            │
+│                                                                                              │
+│ modifies files · approval required                                                           │
+╰──────────────────────────────────────────────────────────────────────────────────────────────╯
+  Yes   Yes, don't ask again   No    ←→ move · enter confirm · esc deny
+  ...
+  ✓ allowed
+
+╭─ ✎  Edit ────────────────────────────────────────────────────────────────────────────────────╮
+│ /tmp/dijkstra.rs                                                                             │
+│                                                                                              │
+│ -     let w_dest = rows.iter().map(|r| r[0].len()).max().unwrap();                           │
+│ -     let w_dist = rows.iter().map(|r| r[1].len()).max().unwrap();                           │
+│ +     let w_dest = rows.iter().map(|r| r.0.len()).max().unwrap();                            │
+│ +     let w_dist = rows.iter().map(|r| r.1.len()).max().unwrap();                            │
+│                                                                                              │
+│ -     let total_w = 2 + w_dest + 2 + w_dist + 2 + rows.iter().map(|r| r[2].len()).max().unw… │
+│ +     let total_w = 2 + w_dest + 2 + w_dist + 2 + rows.iter().map(|r| r.2.len()).max().unwr… │
+│                                                                                              │
+│ modifies files · approval required                                                           │
+╰──────────────────────────────────────────────────────────────────────────────────────────────╯
+    Yes   Yes, don't ask again   No    ←→ move · enter confirm · esc deny
+
+╭─ ❯  Bash ────────────────────────────────────────────────────────────────────────────────────╮
+│ cd /tmp && rustc dijkstra.rs -o dijkstra && ./dijkstra                                       │
+│                                                                                              │
+│ runs a command · approval required                                                           │
+╰──────────────────────────────────────────────────────────────────────────────────────────────╯
+    Yes   Yes, don't ask again   No    ←→ move · enter confirm · esc deny
+
 ```
 
 The border is colour-coded by risk: cyan for read-only, yellow for writes and
@@ -554,13 +598,24 @@ Assistant text is rendered as markdown, and tables are drawn directly rather
 than by termimad — which frames a table only when the source is written its own
 way, and never insets cells:
 
-```
-╭──────┬──────┬─────┬───╮
-│ Step │    a │   b │ q │
-├──────┼──────┼─────┼───┤
-│ 1    │ 1914 │ 899 │ 2 │
-│ 2    │  899 │ 116 │ 7 │
-╰──────┴──────┴─────┴───╯
+```bash
+╭─────────────┬─────────┬────────────────────────────────────────────────────────╮
+│ Destination │    Cost │ Route                                                  │
+├─────────────┼─────────┼────────────────────────────────────────────────────────┤
+│ Madrid      │  625 km │ Lisbon ▸ Madrid                                        │
+├─────────────┼─────────┼────────────────────────────────────────────────────────┤
+│ Barcelona   │ 1245 km │ Lisbon ▸ Madrid ▸ Barcelona                            │
+├─────────────┼─────────┼────────────────────────────────────────────────────────┤
+│ Paris       │ 1675 km │ Lisbon ▸ Madrid ▸ Paris                                │
+├─────────────┼─────────┼────────────────────────────────────────────────────────┤
+│ Lyon        │ 1885 km │ Lisbon ▸ Madrid ▸ Barcelona ▸ Lyon                     │
+├─────────────┼─────────┼────────────────────────────────────────────────────────┤
+│ Marseille   │ 1750 km │ Lisbon ▸ Madrid ▸ Barcelona ▸ Marseille                │
+├─────────────┼─────────┼────────────────────────────────────────────────────────┤
+│ Milan       │ 2270 km │ Lisbon ▸ Madrid ▸ Barcelona ▸ Marseille ▸ Milan        │
+├─────────────┼─────────┼────────────────────────────────────────────────────────┤
+│ Rome        │ 2845 km │ Lisbon ▸ Madrid ▸ Barcelona ▸ Marseille ▸ Milan ▸ Rome │
+╰─────────────┴─────────┴────────────────────────────────────────────────────────╯
 ```
 
 Column alignment (`:---`, `---:`, `:---:`) is honoured and cells carry inline
@@ -650,8 +705,21 @@ Failed, empty, truncated, or non-shrinking summaries leave history intact. Three
 failed automatic attempts pause auto-compaction; successful manual compaction resets
 that state. See [context management and upstream comparison](docs/context-management.md).
 
-Compaction updates the active context checkpoint while retaining earlier messages
-in the session's append-only transcript. See session storage below.
+```bash
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ › /compact status
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Context: ~14924 input tokens / 262144 window (244736 usable for input); 42 messages. Auto-compaction: ready.
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ › /compact
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Compacting older context… Esc or Ctrl+C cancels; original history is retained on failure.
+  Compacted 42 → 6 messages; ~7907 tokens freed. Conversation preserved
+```
+
+Compaction updates the active context checkpoint while retaining earlier messages in the session's append-only transcript. See session storage below.
+
 
 ### Sessions and global memory
 
@@ -742,19 +810,12 @@ scheduler. See [skill configuration and compatibility](docs/skills.md) for examp
 LaTeX previews now preserve mathematical grouping and align matrices, equation
 systems, and piecewise functions. See [terminal math examples](docs/math-rendering.md).
 
+Muted UI text, reasoning, and borders use an explicit gray so terminal palettes
+(such as Kali's) do not tint them green. Cyan remains the accent color.
+
 Fenced code uses language-aware syntax colors, wraps long lines, and preserves
 literal code without applying prose formatting. Labels have room to breathe;
-unlabeled blocks use a continuous border:
-
-```text
-╭─ python ─────────────────╮
-│ def greet(name):         │
-│     return f"Hi, {name}" │
-╰──────────────────────────╯
-╭─────────────────────────╮
-│ Plain output goes here. │
-╰─────────────────────────╯
-```
+unlabeled blocks use a continuous border.
 
 Unknown languages fall back to plain text. `NO_COLOR` or `TERM=dumb` disables
 fenced-code colors; `MYCLI_RAW=1` preserves the original Markdown.

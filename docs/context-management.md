@@ -1,4 +1,4 @@
-# Context management — MyCLI 1.9.8
+# Context management — MyCLI 2.0.0
 
 ## Audit findings and fixes
 

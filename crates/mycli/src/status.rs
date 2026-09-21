@@ -36,6 +36,7 @@ struct State {
     total_in: u64,
     total_out: u64,
     last_in: u64,
+    context_estimated: bool,
     prev_cumulative_in: u64,
     /// Prompt tokens the server actually had to process, and the time it took,
     /// accumulated over the turns of the prompt in flight.
@@ -61,6 +62,7 @@ impl State {
             total_in: 0,
             total_out: 0,
             last_in: 0,
+            context_estimated: false,
             prev_cumulative_in: 0,
             pp_tokens: 0,
             pp_time: Duration::ZERO,
@@ -192,6 +194,7 @@ pub fn reset_tokens() {
     state.total_in = 0;
     state.total_out = 0;
     state.last_in = 0;
+    state.context_estimated = false;
     state.prev_cumulative_in = 0;
     state.prev_turn_input = None;
     begin_prompt_locked(&mut state);
@@ -201,8 +204,19 @@ pub fn reset_tokens() {
 pub fn after_compaction(estimated_input: u64) {
     let mut state = STATE.lock();
     state.last_in = estimated_input;
+    state.context_estimated = true;
     state.prev_turn_input = None;
     begin_prompt_locked(&mut state);
+}
+
+/// Fallback when the provider omits usage; does not reset throughput counters.
+pub fn update_context_estimate(estimated_input: u64) {
+    {
+        let mut state = STATE.lock();
+        state.last_in = estimated_input;
+        state.context_estimated = true;
+    }
+    draw();
 }
 
 fn begin_prompt_locked(state: &mut State) {
@@ -244,6 +258,13 @@ pub fn begin_prompt() {
 pub fn record_turn(usage: &cersei_types::Usage, client_timing: Option<(Duration, Duration)>) {
     {
         let mut state = STATE.lock();
+
+        // Context occupancy is the latest request's total input, including cached
+        // tokens. It is independent of session totals and throughput timing.
+        if usage.input_tokens > 0 {
+            state.last_in = usage.input_tokens;
+            state.context_estimated = false;
+        }
 
         // Which tokens count depends on which clock is being used.
         let (prefill_tokens, prefill) = match usage.prefill_seconds() {
@@ -340,7 +361,8 @@ pub fn draw() {
             ui::GREEN
         };
         format!(
-            "{color}{pct:.1}%{RESET}{DIM}/{}",
+            "{color}{}{pct:.1}%{RESET}{DIM}/{}",
+            if state.context_estimated { "~" } else { "" },
             fmt_tokens(ctx_window as u64)
         )
     } else {
@@ -537,6 +559,45 @@ mod tests {
         record_turn(&usage(400, 1, NONE), Some((second, second)));
         // The shrunk turn adds no prefill work; the rate still reflects turn 1.
         assert_eq!(rates().0, Some(1000.0));
+        reset_tokens();
+    }
+
+    #[test]
+    fn context_uses_latest_request_not_cumulative_totals_for_any_window() {
+        let _guard = TEST_LOCK.lock();
+        for window in [262_144, 1_050_000] {
+            reset_tokens();
+            STATE.lock().context_window = window;
+            record_turn(&usage(3865, 121, NONE), None);
+            update_usage(&usage(109_800, 4700, NONE));
+            assert_eq!(STATE.lock().last_in, 3865);
+            assert!(!STATE.lock().context_estimated);
+            // Tool-only responses have no text timing, but still update context.
+            record_turn(&usage(4200, 30, NONE), None);
+            assert_eq!(STATE.lock().last_in, 4200);
+            after_compaction(1000);
+            assert_eq!(STATE.lock().last_in, 1000);
+            assert!(STATE.lock().context_estimated);
+            record_turn(&usage(800, 10, NONE), None);
+            assert_eq!(STATE.lock().last_in, 800);
+            assert!(!STATE.lock().context_estimated);
+        }
+        reset_tokens();
+    }
+
+    #[test]
+    fn missing_usage_can_use_an_estimate_without_erasing_throughput() {
+        let _guard = TEST_LOCK.lock();
+        reset_tokens();
+        let second = Duration::from_secs(1);
+        record_turn(&usage(1000, 10, NONE), Some((second, second)));
+        let before = rates();
+        update_context_estimate(1250);
+        assert_eq!(STATE.lock().last_in, 1250);
+        assert!(STATE.lock().context_estimated);
+        assert_eq!(rates(), before);
+        update_usage(&usage(9000, 100, NONE));
+        assert_eq!(STATE.lock().last_in, 1250);
         reset_tokens();
     }
 

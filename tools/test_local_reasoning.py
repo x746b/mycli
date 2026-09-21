@@ -47,6 +47,7 @@ def check_picker(root, env):
         REQUESTS.clear()
         command("hello")
         wait_for("mock complete")
+        wait_for("ctx 0.3%/32.8k")
         assert REQUESTS[0][1]["reasoning_effort"] == "brief"
         command("/local cold")
         wait_for("effort:default")
