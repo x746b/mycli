@@ -1,9 +1,9 @@
 # MyCLI
 
-A lightweight AI coding CLI and harness for testing LLM capabilities — especially those of local models running on [oMLX](https://github.com/jundot/omlx) and [DS4](https://github.com/antirez/ds4). Switch between local and cloud models (Kimi, DeepSeek, Gemini, OpenAI), connect MCP tools over stdio or HTTP, and inspect highlighted code and full tool output directly in the terminal.
+Want a lightweight coding CLI that doubles as a test bench for local and cloud LLMs? Meet MyCLI. Switch models, plug in MCP tools over stdio or HTTP, and explore highlighted code and full tool output—all from your terminal.
 
-Screen:
-```bash
+Here’s what it looks like:
+```text
 $ mycli
                     _____ _     __
                   / ____| |   /_ |
@@ -34,8 +34,46 @@ $ mycli
 ```
 
 
-Local models with tuned profiles:
-```bash
+See what’s available on your local inference server:
+
+oMLX: [Website](https://omlx.ai/)
+```text
+───────────────────────────────────────────────────────────────────────────────────────────────
+ › /model
+───────────────────────────────────────────────────────────────────────────────────────────────
+  Select model (1/21) · ↑↓ select, Enter confirm, Esc cancel
+  ▸ Qwen3.6-35B-A3B-8bit (active)
+    mlx-community_Qwen3.8-Flash-Next-Uncensored-oQ5e-mtp
+    orcarouter_Qwen3.8-27B-Uncensored-MLX-8-bit
+    trend-cybertron_Llama-Primus-Nemotron-70B-Instruct-oQ4e
+    DavidAU_Qwen3.8-27B-TWIN-TURBO-Fable-Cold-Fusion-709-L-Uncensored-oQ8-mtp
+    nightmedia_gpt-oss-120b-heretic-v2-mxfp4-q8-hi-mlx
+...
+```
+
+DS4 - [USAGE.md](https://github.com/x746b/ds4/blob/main/USAGE.md)
+```text
+───────────────────────────────────────────────────────────────────────────────────────────────
+ › /model
+───────────────────────────────────────────────────────────────────────────────────────────────
+    glm-5.3-flash
+    glm-5.3-flash-chat
+    glm-5.3-flash-reasoner
+  ▸ deepseek-v4.1-flash 
+
+───────────────────────────────────────────────────────────────────────────────────────────────
+ › /reasoning
+───────────────────────────────────────────────────────────────────────────────────────────────
+  Select reasoning level for deepseek-v4.1-flash (1/5) · ↑↓ select, Enter confirm, Esc cancel
+  ▸ Default — use the model's default (active)
+    Off — disable reasoning
+    Low — faster responses, lighter reasoning
+    High — deeper reasoning
+    Max — highest effort, more token usage
+```
+
+Switch between local models with custom profiles:
+```text
 ───────────────────────────────────────────────────────────────────────────────────────────────
  › /local
 ───────────────────────────────────────────────────────────────────────────────────────────────
@@ -51,8 +89,8 @@ Local models with tuned profiles:
     qwen36
 ```
 
-Cloud inference providers with reasoning:
-```bash
+Switch to a cloud provider and pick a reasoning level:
+```text
 ───────────────────────────────────────────────────────────────────────────────────────────────
  › /cloud
 ───────────────────────────────────────────────────────────────────────────────────────────────
@@ -74,7 +112,7 @@ Cloud inference providers with reasoning:
 
 
 MyCLI supports three tool tiers, with MCP available in the `full` tier:
-```bash
+```text
 ───────────────────────────────────────────────────────────────────────────────────────────────
  › /tools
 ───────────────────────────────────────────────────────────────────────────────────────────────
@@ -93,7 +131,7 @@ Switched to mlx-community_Qwen3.8-Flash-Next-oQ5e-mtp (omlx)
 Single-shot examples:
 ```bash
 # single-shot with tiny model and simple toolset:
-mycli -t simple -m RedSage-Qwen3-8B-DPO         
+mycli -t simple -m RedSage-Qwen3-8B-DPO "Explain Rust ownership briefly."
 
 # offensive security persona with full toolset support and bigger model
 mycli -p redteam -t full -m orcarouter_Qwen3.8-27B-Uncensored "cybersec prompt"    
@@ -105,7 +143,7 @@ mycli -p redteam -t full -m orcarouter_Qwen3.8-27B-Uncensored "cybersec prompt"
 
 ## Why
 
-Small local LLMs (7B–30B) can chat well but struggle with structured tool calling — wrong JSON, hallucinated tool names, broken edit strings. Larger cloud models handle it effortlessly. MyCLI allows testing and comparing them across the spectrum by:
+Small local LLMs (7B–30B) can chat well but struggle with structured tool calling — wrong JSON, hallucinated tool names, broken edit strings. Larger cloud models tend to handle it more reliably. MyCLI allows testing and comparing them across the spectrum by:
 
 - Adjusting tool complexity to match model capability (`simple` / `medium` / `full`)
 - Hot-switching between local and cloud models mid-conversation
@@ -476,7 +514,7 @@ optional replacement catalog and evaluation plan.
 
 Models that emit reasoning have it streamed inline, dimmed behind a gutter:
 
-```
+```text
   ✻ Thinking
   │ Recursive-descent parser. Tokenizer first, then one function per
   │ precedence level, so `*` binds before `+`.
@@ -527,7 +565,7 @@ Anything needing approval opens a dialog showing the *actual* request — the
 full command for Bash, a line diff for Edit, a content preview and byte count
 for Write — so a call can be judged without guessing at it:
 
-```rust
+```text
 ╭─ ✎  Write ───────────────────────────────────────────────────────────────────────────────────╮
 │ /tmp/dijkstra.rs                                                                             │
 │ 44 lines · 1280 bytes                                                                        │
@@ -598,7 +636,7 @@ Assistant text is rendered as markdown, and tables are drawn directly rather
 than by termimad — which frames a table only when the source is written its own
 way, and never insets cells:
 
-```bash
+```text
 ╭─────────────┬─────────┬────────────────────────────────────────────────────────╮
 │ Destination │    Cost │ Route                                                  │
 ├─────────────┼─────────┼────────────────────────────────────────────────────────┤
@@ -652,7 +690,7 @@ expression before it is treated as one.
 
 Two lines pinned to the bottom of the terminal, outside the scroll region:
 
-```
+```text
 /opt/mycli (main)
 ↑2.8k ↓1.1k · pp 626 t/s · tg 95.9 t/s · ctx 4.2%/128k · code · think:on   (omlx) Qwen3.8-27B
 ```
@@ -705,7 +743,7 @@ Failed, empty, truncated, or non-shrinking summaries leave history intact. Three
 failed automatic attempts pause auto-compaction; successful manual compaction resets
 that state. See [context management and upstream comparison](docs/context-management.md).
 
-```bash
+```text
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
  › /compact status
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -797,6 +835,31 @@ and `.agents/skills` in the project and user directories, plus `skill_paths` fro
 config. Nested commands and `SKILL.md` folders are supported. Internal names win,
 then project, user, and configured paths. Use `$ARGUMENTS` in templates; external
 skills also receive their base directory for references and scripts.
+
+Here’s an example from my setup—internal skills alongside my own Claude-compatible skills:
+
+```text
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ › /skill
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Select skill (Enter runs, Esc cancels) (1/55) · ↑↓ select, Enter confirm, Esc cancel
+  ▸ commit [internal] — Create a git commit with a well-crafted message.
+    debug [internal] — Investigate and diagnose a bug or issue.
+    loop [internal] — Run a prompt or slash command on a recurring interval.
+    remember [internal] — Save information to persistent memory for future sessions.
+    simplify [internal] — Review changed code for reuse, quality, and efficiency, then fix any issues found.
+    stuck [internal] — Get unstuck when you're blocked on a problem.
+    verify [internal] — Verify that recent changes work correctly end-to-end.
+    pentest_linux [/opt/red-mcp/.claude/commands/pentest_linux.md] — Pentest Workflow — Linux
+    pentest_linux_agentic [/opt/red-mcp/.claude/commands/pentest_linux_agentic.md] — Pentest Workflow — Linux (Agentic: Opus Orchestrator + Local LLM Executor)
+    pentest_linux_new [/opt/red-mcp/.claude/commands/pentest_linux_new.md] — Pentest Workflow — Linux (Opus Orchestrator + Sonnet Executors)
+    pentest_linux_new_local_llm [/opt/red-mcp/.claude/commands/pentest_linux_new_local_llm.md] — Pentest Workflow — Linux (Opus Orchestrator + Local LLM Execution)
+    pentest_win [/opt/red-mcp/.claude/commands/pentest_win.md] — Pentest Workflow — Windows
+    pentest_win_agentic [/opt/red-mcp/.claude/commands/pentest_win_agentic.md] — Pentest Workflow — Windows (Agentic: Opus Orchestrator + Local LLM Exec...
+    pentest_win_new [/opt/red-mcp/.claude/commands/pentest_win_new.md] — Pentest Workflow — Windows (Opus Orchestrator + Sonnet Executors)
+  ...
+```
+
 
 The revised `commit` skill stages explicit changes and preserves unrelated work,
 informed by the [OpenAI skill example](https://learn.chatgpt.com/docs/customization/overview).
@@ -1007,7 +1070,7 @@ output. Saved capability responses and reports remain local under the ignored
 ### Refusal comparison
 
 The capability benchmark measures whether a model *can* do a task; the refusal workflow
-measures whether it *will* — 8 HTB/OSCP probes across two or more models, scored on refusal,
+measures whether it *will* — 8 OSCP probes across two or more models, scored on refusal,
 code blocks actually produced, and ethics boilerplate. Details in
 [`bench/README.md`](bench/README.md).
 
@@ -1027,7 +1090,7 @@ option, prompt format, configuration override, and generated file.
 
 MyCLI is built on the [Cersei SDK](https://github.com/pacifio/cersei) — a modular Rust SDK for building coding agents, vendored into this repo. See [Cersei compatibility notes](docs/cersei-compatibility.md) before upgrading the SDK.
 
-```
+```text
 mycli (CLI binary)
   └── cersei SDK
       ├── cersei-types       Provider-agnostic types
