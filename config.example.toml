@@ -1,5 +1,10 @@
 # Global: ~/.config/mycli/config.toml ($XDG_CONFIG_HOME supported)
 # Project: .config/mycli/config.toml; legacy .mycli paths remain readable.
+# Optional extra skill roots, individual skill folders, or SKILL.md files.
+# Relative paths use the working directory; ~/ expands to your home directory.
+# skill_paths = ["~/my-skills", "./team/skills"]
+# /skill reload reloads these paths and ~/.config/mycli/skills-internal.toml.
+
 # ─── Local (oMLX) ──────────────────────────────────────────
 # API key for your oMLX server (http://127.0.0.1:8000)
 api_key = "omlx-xxxxxxxxxxxxxxxxxxxx"

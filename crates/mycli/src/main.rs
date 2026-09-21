@@ -11,6 +11,7 @@ mod prompts;
 mod render;
 mod repl;
 mod status;
+mod skills;
 mod ui;
 mod web_search;
 

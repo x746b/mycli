@@ -304,6 +304,7 @@ impl MyHelper {
                 "/usage",
                 "/persona",
                 "/prompts",
+                "/skill",
                 "/thinking",
                 "/reasoning",
                 "/exit",
@@ -573,7 +574,9 @@ fn interactive_picker(models: &[String], current: &str, title: &str) -> Option<S
     let initial = models.iter().position(|m| m == current).unwrap_or(0);
     let mut sel = initial;
     let count = models.len();
-    let total_lines = count + 1; // header + model rows
+    if count == 0 { return None; }
+    let visible = count.min(terminal::size().map(|(_, h)| usize::from(h).saturating_sub(8)).unwrap_or(16).clamp(1, 20));
+    let total_lines = visible + 1; // header + visible rows
 
     if !keys::stdin_is_tty() {
         return None;
@@ -583,7 +586,7 @@ fn interactive_picker(models: &[String], current: &str, title: &str) -> Option<S
     let mut stderr = io::stderr();
 
     // Draw initial
-    draw_picker(&mut stderr, models, sel, current, title);
+    draw_picker(&mut stderr, models, sel, current, title, visible);
 
     let result = loop {
         if let Ok(Event::Key(KeyEvent { code, .. })) = event::read() {
@@ -591,12 +594,12 @@ fn interactive_picker(models: &[String], current: &str, title: &str) -> Option<S
                 KeyCode::Up | KeyCode::Char('k') => {
                     sel = if sel > 0 { sel - 1 } else { count - 1 };
                     let _ = execute!(stderr, cursor::MoveUp(total_lines as u16));
-                    draw_picker(&mut stderr, models, sel, current, title);
+                    draw_picker(&mut stderr, models, sel, current, title, visible);
                 }
                 KeyCode::Down | KeyCode::Char('j') => {
                     sel = if sel < count - 1 { sel + 1 } else { 0 };
                     let _ = execute!(stderr, cursor::MoveUp(total_lines as u16));
-                    draw_picker(&mut stderr, models, sel, current, title);
+                    draw_picker(&mut stderr, models, sel, current, title, visible);
                 }
                 KeyCode::Enter => break Some(models[sel].clone()),
                 KeyCode::Esc | KeyCode::Char('q') => break None,
@@ -620,22 +623,24 @@ fn interactive_picker(models: &[String], current: &str, title: &str) -> Option<S
     result
 }
 
-fn draw_picker(w: &mut impl io::Write, models: &[String], sel: usize, current: &str, title: &str) {
-    // In raw mode \n only moves down, need \r\n for carriage return
-    let _ = write!(
-        w,
-        "\x1b[K  \x1b[36m{title}:\x1b[0m \x1b[90m(↑↓ select, Enter confirm, Esc cancel)\x1b[0m\r\n"
-    );
-    for (i, m) in models.iter().enumerate() {
-        let active = if m == current { " \x1b[90m(active)\x1b[0m" } else { "" };
+fn draw_picker(w: &mut impl io::Write, models: &[String], sel: usize, current: &str, title: &str, visible: usize) {
+    let width = ui::term_width().saturating_sub(5);
+    let title = ui::truncate(&format!("{} ({}/{}) · ↑↓ select, Enter confirm, Esc cancel", title, sel + 1, models.len()), width);
+    let _ = write!(w, "\x1b[K  \x1b[36m{title}\x1b[0m\r\n");
+    let start = sel.saturating_sub(visible.saturating_sub(1));
+    for (i, model) in models.iter().enumerate().skip(start).take(visible) {
+        let active = if model == current { " (active)" } else { "" };
+        let flat = model.split_whitespace().collect::<Vec<_>>().join(" ");
+        let label = ui::truncate(&flat, width.saturating_sub(active.len()));
         if i == sel {
-            let _ = write!(w, "\x1b[K  \x1b[36;1m▸ {m}\x1b[0m{active}\r\n");
+            let _ = write!(w, "\x1b[K  \x1b[36;1m▸ {label}\x1b[0m{active}\r\n");
         } else {
-            let _ = write!(w, "\x1b[K    {m}{active}\r\n");
+            let _ = write!(w, "\x1b[K    {label}{active}\r\n");
         }
     }
     let _ = w.flush();
 }
+
 
 fn build_system_prompt(config: &Config, prompts: &crate::prompts::Prompts, model: &str) -> String {
     let has_search = is_local_provider(config) && config::resolve_tool_tier(config) != "simple";
@@ -693,7 +698,7 @@ fn build_system_prompt(config: &Config, prompts: &crate::prompts::Prompts, model
 }
 
 /// Build tools based on tier: simple, medium, or full.
-fn build_tools(tier: &str, working_dir: &std::path::Path) -> Vec<Box<dyn cersei_tools::Tool>> {
+fn build_tools(tier: &str, working_dir: &std::path::Path, skills: &crate::skills::Skills) -> Vec<Box<dyn cersei_tools::Tool>> {
     let mut tools: Vec<Box<dyn cersei_tools::Tool>> = Vec::new();
 
     // Simple: Read, Write, Bash — minimal surface for small models
@@ -718,13 +723,14 @@ fn build_tools(tier: &str, working_dir: &std::path::Path) -> Vec<Box<dyn cersei_
     tools.push(Box::new(cersei_tools::web_fetch::WebFetchTool));
     tools.push(Box::new(
         cersei_tools::skill_tool::SkillTool::new()
-            .with_project_root(working_dir),
+            .with_project_root(working_dir)
+            .with_registry(skills.registry.clone()),
     ));
 
     tools
 }
 
-async fn build_agent(config: &Config, prompts: &crate::prompts::Prompts, cancel_token: CancellationToken) -> anyhow::Result<(Agent, String)> {
+async fn build_agent(config: &Config, prompts: &crate::prompts::Prompts, skills: &crate::skills::Skills, cancel_token: CancellationToken) -> anyhow::Result<(Agent, String)> {
     let (provider, resolved_model) = build_provider(config)?;
     let effort = config.reasoning_effort.as_deref().filter(|e| *e != "default");
     if let Some(effort) = effort {
@@ -748,7 +754,7 @@ async fn build_agent(config: &Config, prompts: &crate::prompts::Prompts, cancel_
 
     let system_prompt = build_system_prompt(config, prompts, &resolved_model);
     let tier = config::resolve_tool_tier(config);
-    let mut tools = build_tools(tier, &config.working_dir);
+    let mut tools = build_tools(tier, &config.working_dir, skills);
     let mut tool_names: Vec<String> = tools.iter().map(|t| t.name().to_string()).collect();
     let mut report = Vec::new();
     let mcp_entries = config.mcp_entries();
@@ -1352,6 +1358,7 @@ fn handle_command(cmd: &str, args: &str, config: &Config, current_model: &str, p
             eprintln!("  /mcp               Show MCP server status");
             eprintln!("  /mcp verbose       List all MCP tools grouped by server");
             eprintln!("  /usage             Show cloud provider balances");
+            eprintln!("  /skill [name args]  Pick/run a skill; list, paths, reload");
             eprintln!("  /prompts path|reload  Inspect or reload system-prompts.toml");
             eprintln!("  /persona           Show or switch persona from system-prompts.toml");
             eprintln!("  /thinking          Toggle reasoning display (same as ctrl+o)");
@@ -1650,9 +1657,10 @@ async fn rebuild_agent(
     is_first: &mut bool,
     renderer: &mut Renderer,
     prompts: &crate::prompts::Prompts,
+    skills: &crate::skills::Skills,
 ) -> bool {
     let new_cancel = CancellationToken::new();
-    match build_agent(config, prompts, new_cancel).await {
+    match build_agent(config, prompts, skills, new_cancel).await {
         Ok((new_agent, resolved)) => {
             *agent = new_agent;
             render::forget_model_observations();
@@ -1754,14 +1762,38 @@ pub async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
 
     let mut config = config;
     let mut prompts = crate::prompts::Prompts::startup();
+    let mut skills = crate::skills::Skills::startup(&config);
+    // Catalog inspection is local and must not depend on provider availability.
+    match cli.prompt.as_deref().map(str::trim) {
+        Some("/skill list") => {
+            println!("{}", cersei_tools::skills::discovery::format_skill_list(&skills.registry.read().list(true)));
+            return Ok(());
+        }
+        Some("/skill paths" | "/skill path") => { println!("{}", skills.path_info()); return Ok(()); }
+        _ => {}
+    }
     config.persona = prompts.resolve_persona(&config.persona).to_owned();
     render::set_thinking_visible(config.show_thinking);
     render::logo();
-    let (mut agent, mut current_model) = build_agent(&config, &prompts, cancel_token.clone()).await?;
+    let (mut agent, mut current_model) = build_agent(&config, &prompts, &skills, cancel_token.clone()).await?;
     render::session_info(&config, &current_model);
 
     // Single-shot mode
     if let Some(prompt) = &cli.prompt {
+        let expanded;
+        let prompt = if let Some(args) = prompt.strip_prefix("/skill ") {
+            let (name, args) = args.trim().split_once(char::is_whitespace).unwrap_or((args.trim(), ""));
+            match name {
+                "list" => {
+                    println!("{}", cersei_tools::skills::discovery::format_skill_list(&skills.registry.read().list(true)));
+                    return Ok(());
+                }
+                "paths" | "path" => { println!("{}", skills.path_info()); return Ok(()); }
+                _ => {}
+            }
+            expanded = skills.expand(name, Some(args))?;
+            &expanded
+        } else { prompt };
         let mut renderer = Renderer::new();
         renderer.pause_flag = Some(&PERMISSION_ACTIVE);
         renderer.decision_seq = Some(&PERMISSION_SEQ);
@@ -1829,7 +1861,7 @@ pub async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
             editor.readline_with_initial(&prompt_line(), (&pending, ""))
         };
         prompt_close();
-        let input = match read {
+        let mut input = match read {
             Ok(line) => line.trim().to_string(),
             Err(ReadlineError::Eof) | Err(ReadlineError::Interrupted) => break,
             Err(_) => break,
@@ -1837,6 +1869,49 @@ pub async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
 
         if input.is_empty() {
             continue;
+        }
+
+        if let Some(args) = input.strip_prefix("/skill").filter(|tail| tail.is_empty() || tail.starts_with(char::is_whitespace)) {
+            let args = args.trim();
+            match args {
+                "list" => {
+                    eprintln!("{}", cersei_tools::skills::discovery::format_skill_list(&skills.registry.read().list(true)));
+                    continue;
+                }
+                "path" | "paths" => { eprintln!("{}", skills.path_info()); continue; }
+                "reload" => {
+                    let mut fresh = config::load();
+                    fresh.working_dir = config.working_dir.clone();
+                    match skills.reload(&fresh) {
+                        Ok(()) => { config.skill_paths = fresh.skill_paths; renderer.notice("Skills reloaded; conversation preserved."); }
+                        Err(error) => renderer.error(&format!("Skills unchanged: {error:#}")),
+                    }
+                    continue;
+                }
+                _ => {}
+            }
+            let (name, arguments) = if args.is_empty() {
+                let available = skills.registry.read().list(true);
+                if available.is_empty() { renderer.notice("No user-invocable skills found. Use /skill paths."); continue; }
+                let labels: Vec<String> = available.iter().map(|s| format!("{} [{}] — {}", s.name,
+                    if s.bundled { "internal".into() } else { s.path.clone().unwrap_or_else(|| "external".into()) }, s.description)).collect();
+                let Some(selected) = interactive_picker(&labels, "", "Select skill (Enter runs, Esc cancels)") else { continue; };
+                let index = labels.iter().position(|label| *label == selected).unwrap();
+                let arguments = if let Some(hint) = &available[index].argument_hint {
+                    match editor.readline(&format!("Arguments {hint} (blank for none): ")) {
+                        Ok(value) => value,
+                        Err(_) => continue,
+                    }
+                } else { String::new() };
+                (available[index].name.clone(), arguments)
+            } else {
+                let (name, rest) = args.split_once(char::is_whitespace).unwrap_or((args, ""));
+                (name.to_string(), rest.trim().to_string())
+            };
+            match skills.expand(&name, Some(&arguments)) {
+                Ok(expanded) => { renderer.notice(&format!("skill → {name}")); input = expanded; }
+                Err(error) => { renderer.error(&format!("{error:#}")); continue; }
+            }
         }
 
         // Slash commands
@@ -1857,7 +1932,7 @@ pub async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                     next_config.api_key = fresh.api_key;
                     next_config.model = new_model;
                     next_config.persona = prompts.resolve_persona(&next_config.persona).to_owned();
-                    if rebuild_agent(&mut agent, &mut current_model, &next_config, &mut is_first, &mut renderer, &prompts).await {
+                    if rebuild_agent(&mut agent, &mut current_model, &next_config, &mut is_first, &mut renderer, &prompts, &skills).await {
                         config = next_config;
                         render::set_thinking_visible(config.show_thinking);
                         status::reset_tokens();
@@ -1870,7 +1945,7 @@ pub async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                     match source.with_local_profile(&name, &fresh) {
                         Ok(mut next_config) => {
                             next_config.persona = prompts.resolve_persona(&next_config.persona).to_owned();
-                            if rebuild_agent(&mut agent, &mut current_model, &next_config, &mut is_first, &mut renderer, &prompts).await {
+                            if rebuild_agent(&mut agent, &mut current_model, &next_config, &mut is_first, &mut renderer, &prompts, &skills).await {
                                 config = next_config;
                                 render::set_thinking_visible(config.show_thinking);
                                 status::reset_tokens();
@@ -1937,7 +2012,7 @@ pub async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                         agent.set_reasoning_effort(next_config.reasoning_effort.clone());
                         config = next_config;
                         renderer.notice(&format!("reasoning effort → {}", config.reasoning_effort.as_deref().unwrap_or("default")));
-                    } else if rebuild_agent(&mut agent, &mut current_model, &next_config, &mut is_first, &mut renderer, &prompts).await {
+                    } else if rebuild_agent(&mut agent, &mut current_model, &next_config, &mut is_first, &mut renderer, &prompts, &skills).await {
                         config = next_config;
                         render::set_thinking_visible(config.show_thinking);
                         status::reset_tokens();
@@ -1945,12 +2020,12 @@ pub async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                 }
                 CommandResult::SwitchTier(tier) => {
                     config.tool_tier = tier;
-                    rebuild_agent(&mut agent, &mut current_model, &config, &mut is_first, &mut renderer, &prompts).await;
+                    rebuild_agent(&mut agent, &mut current_model, &config, &mut is_first, &mut renderer, &prompts, &skills).await;
                 }
                 CommandResult::SwitchPersona(persona) => {
                     let mut next_config = config.clone();
                     next_config.persona = persona;
-                    if rebuild_agent(&mut agent, &mut current_model, &next_config, &mut is_first, &mut renderer, &prompts).await {
+                    if rebuild_agent(&mut agent, &mut current_model, &next_config, &mut is_first, &mut renderer, &prompts, &skills).await {
                         config = next_config;
                         renderer.notice(&format!("persona → {}", config.persona));
                     }
@@ -1960,7 +2035,7 @@ pub async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                         Ok(next_prompts) => {
                             let mut next_config = config.clone();
                             next_config.persona = next_prompts.resolve_persona(&config.persona).to_owned();
-                            if rebuild_agent(&mut agent, &mut current_model, &next_config, &mut is_first, &mut renderer, &next_prompts).await {
+                            if rebuild_agent(&mut agent, &mut current_model, &next_config, &mut is_first, &mut renderer, &next_prompts, &skills).await {
                                 prompts = next_prompts;
                                 config = next_config;
                                 renderer.notice("Prompts reloaded; conversation reset (same as persona switching).");
@@ -2090,6 +2165,18 @@ mod output_view_terminal_tests {
 #[cfg(test)]
 mod prompt_command_tests {
     use super::*;
+
+    #[test]
+    fn picker_limits_rows_and_flattens_long_labels() {
+        let labels: Vec<String> = (0..55).map(|i| format!("skill-{i:02}\n{}", "long description ".repeat(30))).collect();
+        let mut output = Vec::new();
+        draw_picker(&mut output, &labels, 54, "", "Select skill", 5);
+        let text = String::from_utf8(output).unwrap();
+        assert_eq!(text.lines().count(), 6);
+        assert!(text.contains("skill-54"));
+        assert!(!text.contains("skill-00"));
+        assert!(text.lines().all(|line| ui::display_width(line) < ui::term_width()));
+    }
 
     #[test]
     fn neutral_selection_is_case_insensitive_and_unknown_is_rejected() {

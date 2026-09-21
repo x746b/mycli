@@ -1,144 +1,108 @@
-//! Bundled skills: compile-time skill definitions shipped with Cersei.
-//! Mirrors Claude Code's bundled_skills.rs.
-
+//! Internal skill definitions, embedded from editable TOML for fallback use.
 use super::{LoadedSkill, SkillFormat, SkillMeta};
+use once_cell::sync::Lazy;
+use serde::Deserialize;
+use std::collections::{BTreeMap, HashSet};
 
-/// A bundled skill definition.
-pub struct BundledSkill {
-    pub name: &'static str,
-    pub description: &'static str,
-    pub aliases: &'static [&'static str],
-    pub when_to_use: Option<&'static str>,
-    pub argument_hint: Option<&'static str>,
-    pub prompt_template: &'static str,
-    pub allowed_tools: Option<&'static [&'static str]>,
-    pub user_invocable: bool,
+pub const DEFAULT_SKILLS: &str = include_str!("../../../../skills-internal.toml");
+
+fn yes() -> bool {
+    true
 }
 
-/// All bundled skills.
-pub const BUNDLED_SKILLS: &[BundledSkill] = &[
-    BundledSkill {
-        name: "simplify",
-        description: "Review changed code for reuse, quality, and efficiency, then fix any issues found.",
-        aliases: &[],
-        when_to_use: Some("After editing multiple files or completing a feature"),
-        argument_hint: None,
-        prompt_template: "Review the code I've changed in this session for:\n\
-            1. Opportunities to reuse existing functions/utilities instead of duplicating\n\
-            2. Code quality issues (naming, structure, error handling)\n\
-            3. Performance improvements\n\
-            4. Unnecessary complexity that can be simplified\n\n\
-            Fix any issues you find. Don't add features or refactor beyond what's needed.$ARGUMENTS_SUFFIX",
-        allowed_tools: None,
-        user_invocable: true,
-    },
-    BundledSkill {
-        name: "remember",
-        description: "Save information to persistent memory for future sessions.",
-        aliases: &["mem", "save"],
-        when_to_use: Some("When the user asks you to remember something"),
-        argument_hint: Some("<what to remember>"),
-        prompt_template: "Save the following to memory: $ARGUMENTS",
-        allowed_tools: Some(&["Read", "Write", "Edit", "Glob"]),
-        user_invocable: true,
-    },
-    BundledSkill {
-        name: "debug",
-        description: "Investigate and diagnose a bug or issue.",
-        aliases: &["diagnose"],
-        when_to_use: Some("When something is broken or behaving unexpectedly"),
-        argument_hint: Some("<description of the issue>"),
-        prompt_template: "Investigate this issue: $ARGUMENTS\n\n\
-            1. Search for relevant code and error messages\n\
-            2. Identify the root cause\n\
-            3. Suggest a fix with code changes\n\
-            4. Explain why it was broken",
-        allowed_tools: Some(&["Read", "Grep", "Glob"]),
-        user_invocable: true,
-    },
-    BundledSkill {
-        name: "stuck",
-        description: "Get unstuck when you're blocked on a problem.",
-        aliases: &["help-me", "unblock"],
-        when_to_use: Some("When the agent is going in circles or can't make progress"),
-        argument_hint: Some("<what you're stuck on>"),
-        prompt_template: "I'm stuck on: $ARGUMENTS\n\n\
-            Take a step back and think about this differently:\n\
-            1. What have I already tried?\n\
-            2. What assumptions am I making that might be wrong?\n\
-            3. Is there a simpler approach?\n\
-            4. Should I ask the user for clarification?",
-        allowed_tools: None,
-        user_invocable: true,
-    },
-    BundledSkill {
-        name: "verify",
-        description: "Verify that recent changes work correctly end-to-end.",
-        aliases: &["check", "validate"],
-        when_to_use: Some("After making changes, to confirm they work"),
-        argument_hint: None,
-        prompt_template: "Verify the recent changes work correctly:\n\
-            1. Identify what was changed\n\
-            2. Run relevant tests or checks\n\
-            3. Verify the feature/fix works as intended\n\
-            4. Check for regressions$ARGUMENTS_SUFFIX",
-        allowed_tools: None,
-        user_invocable: true,
-    },
-    BundledSkill {
-        name: "commit",
-        description: "Create a git commit with a well-crafted message.",
-        aliases: &[],
-        when_to_use: Some("When the user asks to commit changes"),
-        argument_hint: Some("<optional commit message hint>"),
-        prompt_template: "Create a git commit for the current changes.\n\n\
-            1. Run `git status` and `git diff --staged` to see what's changed\n\
-            2. If nothing is staged, stage the relevant files\n\
-            3. Write a concise commit message that explains the 'why'\n\
-            4. Create the commit$ARGUMENTS_SUFFIX",
-        allowed_tools: None,
-        user_invocable: true,
-    },
-    BundledSkill {
-        name: "loop",
-        description: "Run a prompt or slash command on a recurring interval.",
-        aliases: &[],
-        when_to_use: Some("When the user wants to poll or repeat a task"),
-        argument_hint: Some("<interval> <command>"),
-        prompt_template: "Set up a recurring task: $ARGUMENTS\n\n\
-            Use CronCreate to schedule this. Parse the interval from the arguments.",
-        allowed_tools: Some(&["CronCreate", "CronList"]),
-        user_invocable: true,
-    },
-];
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BundledSkill {
+    #[serde(skip)]
+    pub name: String,
+    pub description: String,
+    #[serde(default)]
+    pub aliases: Vec<String>,
+    pub argument_hint: Option<String>,
+    #[serde(rename = "prompt")]
+    pub prompt_template: String,
+    pub allowed_tools: Option<Vec<String>>,
+    #[serde(default = "yes")]
+    pub user_invocable: bool,
+    #[serde(default = "yes")]
+    pub model_invocable: bool,
+    #[serde(default = "yes")]
+    pub enabled: bool,
+}
 
-/// Find a bundled skill by name or alias (case-insensitive).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Document {
+    version: u32,
+    skills: BTreeMap<String, BundledSkill>,
+}
+
+pub fn parse_catalog(text: &str) -> Result<Vec<BundledSkill>, String> {
+    let doc: Document = toml::from_str(text).map_err(|e| e.to_string())?;
+    if doc.version != 1 {
+        return Err(format!(
+            "Unsupported skills version {}; expected 1",
+            doc.version
+        ));
+    }
+    let mut seen = HashSet::new();
+    let mut result = Vec::new();
+    for (name, mut skill) in doc.skills {
+        skill.name = name.to_lowercase();
+        for name in std::iter::once(&skill.name).chain(skill.aliases.iter()) {
+            if name.is_empty()
+                || !name
+                    .bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || b"_-".contains(&c))
+                || ["list", "reload", "path", "paths"].contains(&name.to_lowercase().as_str())
+                || !seen.insert(name.to_lowercase())
+            {
+                return Err(format!(
+                    "Invalid, reserved, or duplicate skill name/alias: {name}"
+                ));
+            }
+        }
+        if skill.description.trim().is_empty() || skill.prompt_template.trim().is_empty() {
+            return Err(format!(
+                "Skill '{}' needs a nonempty description and prompt",
+                skill.name
+            ));
+        }
+        if skill.enabled {
+            result.push(skill);
+        }
+    }
+    Ok(result)
+}
+
+pub static BUNDLED_SKILLS: Lazy<Vec<BundledSkill>> =
+    Lazy::new(|| parse_catalog(DEFAULT_SKILLS).expect("valid embedded skills"));
+
 pub fn find_bundled_skill(name: &str) -> Option<&'static BundledSkill> {
-    let lower = name.to_lowercase();
     BUNDLED_SKILLS.iter().find(|s| {
-        s.name == lower || s.aliases.iter().any(|a| *a == lower)
+        s.name.eq_ignore_ascii_case(name) || s.aliases.iter().any(|a| a.eq_ignore_ascii_case(name))
     })
 }
 
-/// Get all user-invocable bundled skills.
 pub fn user_invocable_skills() -> Vec<&'static BundledSkill> {
     BUNDLED_SKILLS.iter().filter(|s| s.user_invocable).collect()
 }
 
-/// Convert a bundled skill to a LoadedSkill.
 pub fn load_bundled(skill: &BundledSkill, _args: Option<&str>) -> LoadedSkill {
     LoadedSkill {
         meta: SkillMeta {
-            name: skill.name.to_string(),
-            description: skill.description.to_string(),
+            name: skill.name.clone(),
+            description: skill.description.clone(),
             path: None,
             bundled: true,
-            aliases: skill.aliases.iter().map(|s| s.to_string()).collect(),
-            allowed_tools: skill.allowed_tools.map(|t| t.iter().map(|s| s.to_string()).collect()),
-            argument_hint: skill.argument_hint.map(|s| s.to_string()),
+            aliases: skill.aliases.clone(),
+            allowed_tools: skill.allowed_tools.clone(),
+            argument_hint: skill.argument_hint.clone(),
             format: SkillFormat::Bundled,
+            user_invocable: skill.user_invocable,
+            model_invocable: skill.model_invocable,
         },
-        content: skill.prompt_template.to_string(),
+        content: skill.prompt_template.clone(),
     }
 }
 

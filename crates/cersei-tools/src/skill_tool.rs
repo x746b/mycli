@@ -14,6 +14,7 @@ pub struct SkillTool {
     project_root: Option<std::path::PathBuf>,
     /// Extra directories to search for skills.
     extra_paths: Vec<std::path::PathBuf>,
+    registry: Option<std::sync::Arc<parking_lot::RwLock<crate::skills::registry::Registry>>>,
 }
 
 impl SkillTool {
@@ -21,7 +22,13 @@ impl SkillTool {
         Self {
             project_root: None,
             extra_paths: Vec::new(),
+            registry: None,
         }
+    }
+
+    pub fn with_registry(mut self, registry: std::sync::Arc<parking_lot::RwLock<crate::skills::registry::Registry>>) -> Self {
+        self.registry = Some(registry);
+        self
     }
 
     pub fn with_project_root(mut self, root: impl Into<std::path::PathBuf>) -> Self {
@@ -86,11 +93,23 @@ impl Tool for SkillTool {
             Err(e) => return ToolResult::error(format!("Invalid input: {}", e)),
         };
 
+        if let Some(registry) = &self.registry {
+            let registry = registry.read();
+            if input.skill.eq_ignore_ascii_case("list") {
+                return ToolResult::success(discovery::format_skill_list(&registry.list(false)));
+            }
+            return match registry.load(&input.skill, false) {
+                Ok(skill) => ToolResult::success(crate::skills::registry::invocation(&skill, input.args.as_deref()))
+                    .with_metadata(serde_json::json!({"skill_name": skill.meta.name, "bundled": skill.meta.bundled, "path": skill.meta.path})),
+                Err(error) => ToolResult::error(error),
+            };
+        }
+
         // List mode
         if input.skill == "list" {
             let project_root = self.project_root.as_deref()
                 .or_else(|| Some(ctx.working_dir.as_path()));
-            let skills = discovery::discover_all(project_root, &self.extra_paths);
+            let skills: Vec<_> = discovery::discover_all(project_root, &self.extra_paths).into_iter().filter(|s| s.model_invocable).collect();
             return ToolResult::success(discovery::format_skill_list(&skills));
         }
 
@@ -101,7 +120,8 @@ impl Tool for SkillTool {
 
         match loaded {
             Some(skill) => {
-                let expanded = skill.expand(input.args.as_deref());
+                if !skill.meta.model_invocable { return ToolResult::error("This skill is user-invocable only"); }
+                let expanded = crate::skills::registry::invocation(&skill, input.args.as_deref());
 
                 // Include metadata in the result
                 let mut meta = serde_json::json!({
@@ -153,6 +173,24 @@ mod tests {
             mcp_manager: None,
             extensions: Extensions::default(),
         }
+    }
+
+    #[tokio::test]
+    async fn shared_registry_is_used_by_model_tool_after_reload() {
+        use crate::skills::{bundled, registry::Registry};
+        let root = tempfile::tempdir().unwrap();
+        let parse = |name: &str| bundled::parse_catalog(&format!("version=1\n[skills.{name}]\ndescription='test'\nprompt='Do $ARGUMENTS'\n")).unwrap();
+        let registry = std::sync::Arc::new(parking_lot::RwLock::new(Registry::new(parse("first"), root.path(), &[])));
+        let tool = SkillTool::new().with_registry(registry.clone());
+        let first = tool.execute(serde_json::json!({"skill":"first", "args":"work"}), &test_ctx()).await;
+        assert!(!first.is_error);
+        assert!(first.content.contains("Do work"));
+        *registry.write() = Registry::new(parse("second"), root.path(), &[]);
+        assert!(tool.execute(serde_json::json!({"skill":"first"}), &test_ctx()).await.is_error);
+        assert!(!tool.execute(serde_json::json!({"skill":"second"}), &test_ctx()).await.is_error);
+        let listed = tool.execute(serde_json::json!({"skill":"list"}), &test_ctx()).await;
+        assert!(listed.content.contains("second"));
+        assert!(!listed.content.lines().any(|line| line.starts_with("  first ")));
     }
 
     #[tokio::test]

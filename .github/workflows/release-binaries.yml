@@ -108,7 +108,7 @@ jobs:
           fi
           file "dist/$package/mycli"
           test "$("dist/$package/mycli" --version)" = "mycli ${RELEASE_TAG#v}"
-          cp README.md config.example.toml system-prompts.toml Cargo.lock "dist/$package/"
+          cp README.md config.example.toml system-prompts.toml skills-internal.toml Cargo.lock "dist/$package/"
           cp -R bench "dist/$package/bench"
           test -x "dist/$package/bench/bench.py"
           python3 "dist/$package/bench/bench.py" --help >/dev/null

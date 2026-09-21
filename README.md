@@ -2,6 +2,11 @@
 
 Lightweight AI coding CLI for testing LLM capabilities — especially local models running on [oMLX](https://github.com/jundot/omlx). Switch between local and cloud models (Kimi, DeepSeek, Gemini, OpenAI), connect MCP tools over stdio or HTTP, and inspect highlighted code and full tool output directly in the terminal.
 
+**1.9.7:** `/skill` now lists and runs internal and external skills directly.
+Edit internal templates in `~/.config/mycli/skills-internal.toml`; add search roots
+with `skill_paths`, and refresh with `/skill reload`. Claude-style names and
+nested skill discovery now use the same catalog as the full-tier `Skill` tool.
+
 **1.9.6:** System prompts and personas are editable in `system-prompts.toml`, with
 an empty Neutral persona and `/prompts path|reload`. Configuration now uses
 `~/.config/mycli` (`XDG_CONFIG_HOME` supported), with legacy `.mycli` fallback.
@@ -23,7 +28,7 @@ $ mycli
  | | | | | | |_| | |____| |____| |
  |_| |_| |_|\__, |\_____|______|_|
              __/ |
-            |___/           v1.9.6
+            |___/           v1.9.7
 
   tools [medium]: Read, Write, Bash, Edit, Glob, Grep, WebSearch
   omlx · Qwen3.8-27B · tools:medium · max_turns:30 · /opt/mycli
@@ -302,6 +307,7 @@ mycli --cloud deepseek -y "refactor main.rs"   # auto-approve tools
 | `/tools` | Interactive tool tier picker |
 | `/tools <tier>` | Switch tier (`simple` / `medium` / `full`) |
 | `/persona [name]` | Pick or switch to any configured persona |
+| `/skill [name args]` | Pick or run a skill; `list`, `paths`, and `reload` inspect/manage the catalog |
 | `/prompts path` | Show active prompt source and preferred file |
 | `/prompts reload` | Reload prompt catalog and reset conversation |
 | `/usage` | Show cloud balances / spend (Kimi, DeepSeek, OpenAI) |
@@ -671,48 +677,27 @@ Each line is numbered, with the cursor position and scroll region reported at th
 
 ## Skills
 
-The `Skill` tool is available on the `full` tool tier. Ask mycli to **list
-available skills** or **use simplify**; the model calls the tool to list or load
-the instructions. There is no dedicated `/skills` command yet.
+Use `/skill` for a picker, `/skill list` for a listing, or `/skill debug failing tests`
+to run a skill directly. These commands work on every tool tier; the model-callable
+`Skill` tool remains on `full`. Both use the same catalog and normal tool permissions.
 
-### Bundled skills
+Internal skills (`simplify`, `remember`, `debug`, `stuck`, `verify`, `commit`, `loop`)
+live in `~/.config/mycli/skills-internal.toml` (`XDG_CONFIG_HOME` supported). Copy the
+bundled [catalog](skills-internal.toml) there to edit, add, disable, or remove skills.
+`MYCLI_SKILLS` overrides its location; missing files use embedded defaults.
+`/skill reload` applies valid edits without resetting conversation; invalid edits
+leave the active catalog intact. `/skill paths` shows the active file and search roots.
 
-These seven prompt templates are defined in
-[`crates/cersei-tools/src/skills/bundled.rs`](crates/cersei-tools/src/skills/bundled.rs)
-and compiled into the binary. They are not separate `SKILL.md` files; changing
-them requires editing the Rust source and rebuilding mycli.
+External discovery checks `.config/mycli/skills`, `.claude/commands`, `.claude/skills`,
+and `.agents/skills` in the project and user directories, plus `skill_paths` from
+config. Nested commands and `SKILL.md` folders are supported. Internal names win,
+then project, user, and configured paths. Use `$ARGUMENTS` in templates; external
+skills also receive their base directory for references and scripts.
 
-| Skill | Aliases | Purpose |
-| --- | --- | --- |
-| `simplify` | — | Review changed code for reuse, quality, and unnecessary complexity |
-| `remember` | `mem`, `save` | Prompt the model to save information to memory |
-| `debug` | `diagnose` | Investigate an issue and suggest a fix |
-| `stuck` | `help-me`, `unblock` | Reconsider assumptions and alternative approaches |
-| `verify` | `check`, `validate` | Check recent changes and run relevant tests |
-| `commit` | — | Inspect changes and create a Git commit |
-| `loop` | — | Request a recurring task; requires scheduling tools |
-
-Loading a skill returns its instruction text to the model, with `$ARGUMENTS`
-expanded. Subsequent tool calls still follow normal approval rules. Templates
-do not add capabilities: for example, `loop` expects `CronCreate`, which mycli's
-default tool set does not include.
-
-### Skills on disk
-
-Discovery also checks these locations under both the working directory and
-the user's home directory:
-
-- `.claude/commands/*.md`
-- `.claude/skills/<name>/SKILL.md`
-- `.agents/skills/<name>/SKILL.md`
-
-Existing directory symlinks work too, so a linked `~/.claude/commands` directory
-makes its top-level command files available from any project. Discovery is
-shallow; nested command folders are not automatically listed.
-
-Bundled names take precedence over matching disk skills, followed by project
-skills and then home-directory skills. `.codex-htb/skills` is not automatically
-searched, and supporting references/scripts are not automatically loaded.
+The revised `commit` skill stages explicit changes and preserves unrelated work,
+informed by the [OpenAI skill example](https://learn.chatgpt.com/docs/customization/overview).
+Skills supply instructions, not extra capabilities; `loop` needs an available
+scheduler. See [skill configuration and compatibility](docs/skills.md) for examples.
 
 ---
 

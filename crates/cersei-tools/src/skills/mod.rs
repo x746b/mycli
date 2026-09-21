@@ -7,6 +7,7 @@
 
 pub mod bundled;
 pub mod discovery;
+pub mod registry;
 
 use serde::{Deserialize, Serialize};
 
@@ -23,13 +24,19 @@ pub struct SkillMeta {
     pub bundled: bool,
     /// Alternative names for this skill.
     pub aliases: Vec<String>,
-    /// Tool restrictions: None = all tools, Some = only these tools.
+    /// Declared tool metadata; loading a skill does not change runtime permissions.
     pub allowed_tools: Option<Vec<String>>,
     /// Usage hint for arguments.
     pub argument_hint: Option<String>,
     /// Skill format detected.
     pub format: SkillFormat,
+    #[serde(default = "default_invocable")]
+    pub user_invocable: bool,
+    #[serde(default = "default_invocable")]
+    pub model_invocable: bool,
 }
+
+fn default_invocable() -> bool { true }
 
 /// Which format the skill file uses.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -53,18 +60,22 @@ pub struct LoadedSkill {
 impl LoadedSkill {
     /// Expand the skill template with given arguments.
     pub fn expand(&self, args: Option<&str>) -> String {
-        let mut result = self.content.clone();
-
-        // Replace $ARGUMENTS_SUFFIX first (it contains $ARGUMENTS as substring)
-        if let Some(args) = args {
-            result = result.replace("$ARGUMENTS_SUFFIX", &format!(": {}", args));
-            result = result.replace("$ARGUMENTS", args);
-        } else {
-            result = result.replace("$ARGUMENTS_SUFFIX", "");
-            result = result.replace("$ARGUMENTS", "");
-        }
-
-        result
+        let args = args.unwrap_or("");
+        let words: Vec<&str> = args.split_whitespace().collect();
+        let directory = self.meta.path.as_ref().and_then(|p| std::path::Path::new(p).parent())
+            .map(|p| p.display().to_string()).unwrap_or_default();
+        let pattern = regex::Regex::new(r"\$ARGUMENTS_SUFFIX|\$ARGUMENTS\[(\d+)\]|\$ARGUMENTS|\$(\d+)|\$\{CLAUDE_SKILL_DIR\}").unwrap();
+        pattern.replace_all(&self.content, |caps: &regex::Captures<'_>| {
+            if let Some(index) = caps.get(1).or_else(|| caps.get(2)) {
+                return index.as_str().parse::<usize>().ok().and_then(|i| words.get(i)).unwrap_or(&"").to_string();
+            }
+            match &caps[0] {
+                "$ARGUMENTS_SUFFIX" if !args.is_empty() => format!(": {args}"),
+                "$ARGUMENTS_SUFFIX" => String::new(),
+                "${CLAUDE_SKILL_DIR}" => directory.clone(),
+                _ => args.to_string(),
+            }
+        }).into_owned()
     }
 }
 
@@ -84,34 +95,37 @@ pub fn strip_frontmatter(content: &str) -> String {
 /// Parse YAML frontmatter into key-value pairs.
 /// Returns (frontmatter_map, content_after_frontmatter).
 pub fn parse_frontmatter(content: &str) -> (std::collections::HashMap<String, String>, String) {
-    let mut map = std::collections::HashMap::new();
+    try_parse_frontmatter(content).unwrap_or_else(|_| (Default::default(), strip_frontmatter(content)))
+}
 
-    if !content.starts_with("---") {
-        return (map, content.to_string());
-    }
-
-    let after_open = &content[3..];
-    if let Some(close_pos) = after_open.find("\n---") {
-        let yaml_block = &after_open[..close_pos].trim();
-        let body = after_open[close_pos + 4..].trim_start_matches('\n').to_string();
-
-        // Simple YAML key: value parser (handles single-line values)
-        for line in yaml_block.lines() {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-            if let Some(colon_pos) = line.find(':') {
-                let key = line[..colon_pos].trim().to_string();
-                let value = line[colon_pos + 1..].trim().to_string();
-                map.insert(key, value);
-            }
+/// Parse scalar and list YAML metadata, including quoted and multiline values.
+pub fn try_parse_frontmatter(content: &str) -> Result<(std::collections::HashMap<String, String>, String), String> {
+    let normalized = content.replace("\r\n", "\n");
+    let Some(after) = normalized.strip_prefix("---\n") else {
+        return Ok((Default::default(), content.to_string()));
+    };
+    let mut offset = 0;
+    for line in after.split_inclusive('\n') {
+        if line.trim_end() == "---" {
+            let value: serde_yaml::Value = serde_yaml::from_str(&after[..offset]).map_err(|e| e.to_string())?;
+            let mut map = std::collections::HashMap::new();
+            if let serde_yaml::Value::Mapping(fields) = value {
+                for (key, value) in fields {
+                    let Some(key) = key.as_str() else { continue };
+                    let text = match value {
+                        serde_yaml::Value::String(value) => value.trim().to_string(),
+                        serde_yaml::Value::Bool(value) => value.to_string(),
+                        serde_yaml::Value::Sequence(values) => values.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(", "),
+                        _ => continue,
+                    };
+                    map.insert(key.to_owned(), text);
+                }
+            } else if !value.is_null() { return Err("Skill frontmatter must be a YAML mapping".into()); }
+            return Ok((map, after[offset+line.len()..].trim_start_matches('\n').to_string()));
         }
-
-        return (map, body);
+        offset += line.len();
     }
-
-    (map, content.to_string())
+    Err("Unclosed skill frontmatter".into())
 }
 
 /// Extract description from content: first non-empty line (max 80 chars).
@@ -176,6 +190,7 @@ mod tests {
                 allowed_tools: None,
                 argument_hint: None,
                 format: SkillFormat::Bundled,
+                user_invocable: true, model_invocable: true,
             },
             content: "Do $ARGUMENTS in the codebase$ARGUMENTS_SUFFIX".into(),
         };

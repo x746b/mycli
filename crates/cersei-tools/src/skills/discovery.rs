@@ -1,272 +1,180 @@
-//! Skill discovery: scan directories for .md skill files.
-//!
-//! Supports both Claude Code format (.claude/commands/*.md)
-//! and OpenCode format (.claude/skills/**/SKILL.md).
-
+//! Deterministic discovery shared by the CLI picker and model Skill tool.
 use super::*;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-/// Default discovery directories relative to a project root.
-const CLAUDE_CODE_DIRS: &[&str] = &[".claude/commands"];
-const OPENCODE_DIRS: &[&str] = &[".claude/skills", ".agents/skills"];
+pub fn discover_all(project_root: Option<&Path>, extra_paths: &[PathBuf]) -> Vec<SkillMeta> {
+    discover_with_bundled(project_root, extra_paths, &bundled::BUNDLED_SKILLS)
+}
 
-/// Scan all standard directories for skills.
-///
-/// Order: bundled > project-level > home-level > extra paths.
-/// Deduplicates by name (first found wins).
-pub fn discover_all(
+pub fn discover_with_bundled(
     project_root: Option<&Path>,
     extra_paths: &[PathBuf],
+    internal: &[bundled::BundledSkill],
 ) -> Vec<SkillMeta> {
-    let mut skills: Vec<SkillMeta> = Vec::new();
-    let mut seen_names: HashSet<String> = HashSet::new();
-
-    // 1. Bundled skills (highest priority)
-    for skill in bundled::user_invocable_skills() {
-        seen_names.insert(skill.name.to_string());
-        for alias in skill.aliases {
-            seen_names.insert(alias.to_string());
-        }
-        skills.push(SkillMeta {
-            name: skill.name.to_string(),
-            description: skill.description.to_string(),
-            path: None,
-            bundled: true,
-            aliases: skill.aliases.iter().map(|s| s.to_string()).collect(),
-            allowed_tools: skill.allowed_tools.map(|t| t.iter().map(|s| s.to_string()).collect()),
-            argument_hint: skill.argument_hint.map(|s| s.to_string()),
-            format: SkillFormat::Bundled,
-        });
+    let mut skills = Vec::new();
+    let mut seen = HashSet::new();
+    for skill in internal {
+        let meta = bundled::load_bundled(skill, None).meta;
+        seen.insert(meta.name.to_lowercase());
+        seen.extend(meta.aliases.iter().map(|a| a.to_lowercase()));
+        skills.push(meta);
     }
-
-    // 2. Project-level directories
-    if let Some(root) = project_root {
-        for dir in CLAUDE_CODE_DIRS {
-            scan_claude_code_dir(&root.join(dir), &mut skills, &mut seen_names);
-        }
-        for dir in OPENCODE_DIRS {
-            scan_opencode_dir(&root.join(dir), &mut skills, &mut seen_names);
-        }
+    for dir in build_search_dirs(project_root, extra_paths) {
+        scan(&dir, &mut skills, &mut seen);
     }
-
-    // 3. Home-level directories
-    if let Some(home) = dirs::home_dir() {
-        for dir in CLAUDE_CODE_DIRS {
-            scan_claude_code_dir(&home.join(dir), &mut skills, &mut seen_names);
-        }
-        for dir in OPENCODE_DIRS {
-            scan_opencode_dir(&home.join(dir), &mut skills, &mut seen_names);
-        }
-    }
-
-    // 4. Extra paths
-    for path in extra_paths {
-        scan_claude_code_dir(path, &mut skills, &mut seen_names);
-        scan_opencode_dir(path, &mut skills, &mut seen_names);
-    }
-
     skills
 }
 
-/// Scan a Claude Code format directory: `dir/*.md`
-fn scan_claude_code_dir(
-    dir: &Path,
-    skills: &mut Vec<SkillMeta>,
-    seen: &mut HashSet<String>,
-) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
-
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("md") {
-            continue;
-        }
-        let name = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("")
-            .to_string();
-
-        if name.is_empty() || seen.contains(&name.to_lowercase()) {
-            continue;
-        }
-
-        let content = match std::fs::read_to_string(&path) {
-            Ok(c) => c,
-            Err(_) => continue,
-        };
-
-        let (fm, body) = parse_frontmatter(&content);
-        let description = fm
-            .get("description")
-            .cloned()
-            .unwrap_or_else(|| extract_description(&body));
-
-        let allowed_tools = fm.get("allowed-tools").map(|v| {
-            v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
-        });
-
-        seen.insert(name.to_lowercase());
-        skills.push(SkillMeta {
-            name: name.clone(),
-            description,
-            path: Some(path.display().to_string()),
-            bundled: false,
-            aliases: vec![],
-            allowed_tools,
-            argument_hint: fm.get("argument-hint").cloned(),
-            format: SkillFormat::ClaudeCode,
-        });
+pub fn build_search_dirs(project_root: Option<&Path>, extra_paths: &[PathBuf]) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    let standard = [".claude/commands", ".claude/skills", ".agents/skills"];
+    if let Some(root) = project_root {
+        paths.push(root.join(".config/mycli/skills"));
+        paths.extend(standard.iter().map(|p| root.join(p)));
     }
+    if let Some(home) = dirs::home_dir() {
+        let config = std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
+            .unwrap_or_else(|| home.join(".config"));
+        paths.push(config.join("mycli/skills"));
+        paths.extend(standard.iter().map(|p| home.join(p)));
+    }
+    paths.extend_from_slice(extra_paths);
+    let mut seen = HashSet::new();
+    paths.retain(|p| seen.insert(p.clone()));
+    paths
 }
 
-/// Scan an OpenCode format directory: `dir/<name>/SKILL.md`
-fn scan_opencode_dir(
-    dir: &Path,
-    skills: &mut Vec<SkillMeta>,
-    seen: &mut HashSet<String>,
-) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
-
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if !path.is_dir() {
+fn scan(dir: &Path, skills: &mut Vec<SkillMeta>, seen: &mut HashSet<String>) {
+    // Accept a configured individual SKILL.md, skill folder, or collection root.
+    let mut files: Vec<PathBuf> = walkdir::WalkDir::new(dir)
+        .follow_links(true)
+        .max_depth(8)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|e| e.file_type().is_file())
+        .map(|e| e.into_path())
+        .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("md"))
+        .collect();
+    files.sort();
+    for path in files {
+        let is_skill = path.file_name().and_then(|n| n.to_str()) == Some("SKILL.md");
+        // Supporting references are not standalone commands.
+        if !is_skill
+            && path
+                .parent()
+                .into_iter()
+                .flat_map(|p| p.ancestors())
+                .take_while(|p| p.starts_with(dir))
+                .any(|p| p.join("SKILL.md").is_file())
+        {
             continue;
         }
-
-        let skill_file = path.join("SKILL.md");
-        if !skill_file.exists() {
+        let Ok(content) = std::fs::read_to_string(&path) else {
             continue;
-        }
-
-        let content = match std::fs::read_to_string(&skill_file) {
-            Ok(c) => c,
-            Err(_) => continue,
         };
-
-        let (fm, body) = parse_frontmatter(&content);
-
-        // OpenCode requires name in frontmatter
-        let name = fm
-            .get("name")
-            .cloned()
-            .unwrap_or_else(|| {
-                path.file_name()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("")
-                    .to_string()
-            });
-
-        if name.is_empty() || seen.contains(&name.to_lowercase()) {
+        let (fm, body) = match try_parse_frontmatter(&content) {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                eprintln!("Warning: skipping skill {}: {error}", path.display());
+                continue;
+            }
+        };
+        let fallback = if is_skill {
+            path.parent()
+                .and_then(|p| p.file_name())
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default()
+        } else {
+            path.strip_prefix(dir)
+                .unwrap_or(&path)
+                .with_extension("")
+                .components()
+                .map(|c| c.as_os_str().to_string_lossy())
+                .collect::<Vec<_>>()
+                .join(":")
+        };
+        let name = fm.get("name").cloned().unwrap_or(fallback);
+        if name.is_empty() || seen.contains(&name.to_lowercase()) || body.trim().is_empty() {
             continue;
         }
-
-        let description = fm
-            .get("description")
-            .cloned()
-            .unwrap_or_else(|| extract_description(&body));
-
+        let absolute = std::fs::canonicalize(&path).unwrap_or(path);
+        let list = |key: &str| {
+            fm.get(key).map(|v| {
+                v.split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect::<Vec<String>>()
+            })
+        };
+        let aliases: Vec<String> = list("aliases")
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|a: &String| !seen.contains(&a.to_lowercase()))
+            .collect();
         seen.insert(name.to_lowercase());
+        seen.extend(aliases.iter().map(|a| a.to_lowercase()));
         skills.push(SkillMeta {
             name,
-            description,
-            path: Some(skill_file.display().to_string()),
+            description: fm
+                .get("description")
+                .cloned()
+                .unwrap_or_else(|| extract_description(&body)),
+            path: Some(absolute.display().to_string()),
             bundled: false,
-            aliases: vec![],
-            allowed_tools: None,
-            argument_hint: None,
-            format: SkillFormat::OpenCode,
+            aliases,
+            allowed_tools: list("allowed-tools"),
+            argument_hint: fm.get("argument-hint").cloned(),
+            format: if is_skill {
+                SkillFormat::OpenCode
+            } else {
+                SkillFormat::ClaudeCode
+            },
+            user_invocable: fm
+                .get("user-invocable")
+                .map(|s| s != "false")
+                .unwrap_or(true),
+            model_invocable: fm
+                .get("disable-model-invocation")
+                .map(|s| s != "true")
+                .unwrap_or(true),
         });
     }
 }
 
-/// Load a skill from disk by name.
-/// Searches bundled first, then project/home directories.
+/// Load the exact discovered path (frontmatter names need not match folder names).
+pub fn load_discovered(
+    meta: &SkillMeta,
+    internal: &[bundled::BundledSkill],
+) -> Result<LoadedSkill, String> {
+    if meta.bundled {
+        return internal
+            .iter()
+            .find(|s| s.name == meta.name)
+            .map(|s| bundled::load_bundled(s, None))
+            .ok_or_else(|| format!("Skill '{}' no longer exists", meta.name));
+    }
+    let path = meta.path.as_ref().ok_or("Missing skill path")?;
+    let text = std::fs::read_to_string(path).map_err(|e| format!("Cannot read {path}: {e}"))?;
+    let (_, content) = try_parse_frontmatter(&text)?;
+    Ok(LoadedSkill {
+        meta: meta.clone(),
+        content,
+    })
+}
+
 pub fn load_skill(
     name: &str,
     project_root: Option<&Path>,
     extra_paths: &[PathBuf],
 ) -> Option<LoadedSkill> {
-    let lower = name.to_lowercase();
-
-    // 1. Check bundled
-    if let Some(bundled) = bundled::find_bundled_skill(&lower) {
-        return Some(bundled::load_bundled(bundled, None));
-    }
-
-    // 2. Search directories
-    let search_dirs = build_search_dirs(project_root, extra_paths);
-
-    for dir in &search_dirs {
-        // Claude Code format: dir/<name>.md
-        let cc_path = dir.join(format!("{}.md", name));
-        if cc_path.exists() {
-            if let Ok(content) = std::fs::read_to_string(&cc_path) {
-                let (fm, body) = parse_frontmatter(&content);
-                let description = fm.get("description").cloned().unwrap_or_else(|| extract_description(&body));
-                return Some(LoadedSkill {
-                    meta: SkillMeta {
-                        name: name.to_string(),
-                        description,
-                        path: Some(cc_path.display().to_string()),
-                        bundled: false,
-                        aliases: vec![],
-                        allowed_tools: fm.get("allowed-tools").map(|v| {
-                            v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
-                        }),
-                        argument_hint: fm.get("argument-hint").cloned(),
-                        format: SkillFormat::ClaudeCode,
-                    },
-                    content: body,
-                });
-            }
-        }
-
-        // OpenCode format: dir/<name>/SKILL.md
-        let oc_path = dir.join(name).join("SKILL.md");
-        if oc_path.exists() {
-            if let Ok(content) = std::fs::read_to_string(&oc_path) {
-                let (fm, body) = parse_frontmatter(&content);
-                let description = fm.get("description").cloned().unwrap_or_else(|| extract_description(&body));
-                return Some(LoadedSkill {
-                    meta: SkillMeta {
-                        name: name.to_string(),
-                        description,
-                        path: Some(oc_path.display().to_string()),
-                        bundled: false,
-                        aliases: vec![],
-                        allowed_tools: None,
-                        argument_hint: None,
-                        format: SkillFormat::OpenCode,
-                    },
-                    content: body,
-                });
-            }
-        }
-    }
-
-    None
-}
-
-/// Build the list of directories to search.
-fn build_search_dirs(project_root: Option<&Path>, extra_paths: &[PathBuf]) -> Vec<PathBuf> {
-    let mut dirs = Vec::new();
-
-    if let Some(root) = project_root {
-        for d in CLAUDE_CODE_DIRS.iter().chain(OPENCODE_DIRS.iter()) {
-            dirs.push(root.join(d));
-        }
-    }
-
-    if let Some(home) = dirs::home_dir() {
-        for d in CLAUDE_CODE_DIRS.iter().chain(OPENCODE_DIRS.iter()) {
-            dirs.push(home.join(d));
-        }
-    }
-
-    dirs.extend_from_slice(extra_paths);
-    dirs
+    let all = discover_all(project_root, extra_paths);
+    let meta = all.iter().find(|s| {
+        s.name.eq_ignore_ascii_case(name) || s.aliases.iter().any(|a| a.eq_ignore_ascii_case(name))
+    })?;
+    load_discovered(meta, &bundled::BUNDLED_SKILLS).ok()
 }
 
 /// Format skill list for display (compatible with Claude Code's skill list output).
@@ -279,7 +187,11 @@ pub fn format_skill_list(skills: &[SkillMeta]) -> String {
     lines.push("Available skills:".to_string());
 
     for skill in skills {
-        let tag = if skill.bundled { " [bundled]" } else { "" };
+        let tag = if skill.bundled {
+            " [bundled]".to_string()
+        } else {
+            format!(" [{}]", skill.path.as_deref().unwrap_or("external"))
+        };
         let hint = skill
             .argument_hint
             .as_deref()
@@ -316,7 +228,11 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let cmd_dir = tmp.path().join(".claude/commands");
         fs::create_dir_all(&cmd_dir).unwrap();
-        fs::write(cmd_dir.join("my-skill.md"), "---\ndescription: My custom skill\n---\n\nDo $ARGUMENTS please.").unwrap();
+        fs::write(
+            cmd_dir.join("my-skill.md"),
+            "---\ndescription: My custom skill\n---\n\nDo $ARGUMENTS please.",
+        )
+        .unwrap();
 
         let skills = discover_all(Some(tmp.path()), &[]);
         let custom = skills.iter().find(|s| s.name == "my-skill");
@@ -330,7 +246,11 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let skill_dir = tmp.path().join(".claude/skills/my-oc-skill");
         fs::create_dir_all(&skill_dir).unwrap();
-        fs::write(skill_dir.join("SKILL.md"), "---\nname: my-oc-skill\ndescription: OpenCode style skill\n---\n\n# Skill content").unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: my-oc-skill\ndescription: OpenCode style skill\n---\n\n# Skill content",
+        )
+        .unwrap();
 
         let skills = discover_all(Some(tmp.path()), &[]);
         let custom = skills.iter().find(|s| s.name == "my-oc-skill");
@@ -365,7 +285,11 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let cmd_dir = tmp.path().join(".claude/commands");
         fs::create_dir_all(&cmd_dir).unwrap();
-        fs::write(cmd_dir.join("deploy.md"), "---\ndescription: Deploy to prod\n---\n\nRun deploy for $ARGUMENTS").unwrap();
+        fs::write(
+            cmd_dir.join("deploy.md"),
+            "---\ndescription: Deploy to prod\n---\n\nRun deploy for $ARGUMENTS",
+        )
+        .unwrap();
 
         let loaded = load_skill("deploy", Some(tmp.path()), &[]);
         assert!(loaded.is_some());
@@ -392,7 +316,10 @@ mod tests {
             if dir.exists() {
                 let skills = discover_all(None, &[]);
                 let disk_skills: Vec<_> = skills.iter().filter(|s| !s.bundled).collect();
-                println!("Found {} disk skills from ~/.claude/commands/", disk_skills.len());
+                println!(
+                    "Found {} disk skills from ~/.claude/commands/",
+                    disk_skills.len()
+                );
                 for s in &disk_skills {
                     println!("  {} — {} ({:?})", s.name, s.description, s.format);
                 }

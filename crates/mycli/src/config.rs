@@ -215,6 +215,8 @@ pub struct Config {
     pub cloud: HashMap<String, CloudProfile>,
     /// Named local model profiles, selected with /local or --local.
     pub local: BTreeMap<String, LocalProfile>,
+    /// Additional skill directories or SKILL.md files; relative paths use the working directory.
+    pub skill_paths: Option<Vec<String>>,
     pub temperature: Option<f32>,
     pub top_p: Option<f32>,
     pub min_p: Option<f32>,
@@ -264,6 +266,7 @@ impl Default for Config {
             mcp_servers: BTreeMap::new(),
             cloud: HashMap::new(),
             local: BTreeMap::new(),
+            skill_paths: None,
             temperature: None,
             top_p: None,
             min_p: None,
@@ -825,6 +828,7 @@ fn merge(base: &mut Config, overlay: Config) {
     if overlay.min_p.is_some() { base.min_p = overlay.min_p; }
     if overlay.thinking.is_some() { base.thinking = overlay.thinking; }
     base.local.extend(overlay.local);
+    if overlay.skill_paths.is_some() { base.skill_paths = overlay.skill_paths; }
     // Merge whole server definitions by name, independently of input syntax.
     // Project entries (including enabled=false) replace global definitions.
     let mut servers = BTreeMap::new();

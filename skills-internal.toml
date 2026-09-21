@@ -1,0 +1,76 @@
+# Editable internal skills. External files replace this catalog, allowing additions/removals.
+# Default location: ~/.config/mycli/skills-internal.toml (XDG_CONFIG_HOME supported).
+version = 1
+
+[skills.simplify]
+description = "Review changed code for reuse, quality, and efficiency, then fix any issues found."
+aliases = []
+prompt = '''
+Review the code I've changed in this session for:
+1. Opportunities to reuse existing functions/utilities instead of duplicating
+2. Code quality issues (naming, structure, error handling)
+3. Performance improvements
+4. Unnecessary complexity that can be simplified
+
+Fix any issues you find. Don't add features or refactor beyond what's needed.$ARGUMENTS_SUFFIX
+'''
+
+[skills.remember]
+description = "Save information to persistent memory for future sessions."
+aliases = ["mem", "save"]
+argument_hint = "<what to remember>"
+prompt = '''
+Save this information for future sessions: $ARGUMENTS
+Inspect the project's existing memory conventions. Update the appropriate memory file with concise, durable facts, avoiding duplicates and credentials. If no destination is established, ask where it should be stored. Report the file updated; do not claim persistence without writing it.
+'''
+
+[skills.debug]
+description = "Investigate and diagnose a bug or issue."
+aliases = ["diagnose"]
+argument_hint = "<description of the issue>"
+prompt = '''
+Investigate this issue: $ARGUMENTS
+Inspect relevant code, errors, and existing tests. Separate evidence from hypotheses and identify the root cause. Propose a focused fix, or implement it when requested. Verify the behavior with an appropriate check and report uncertainty or blockers.
+'''
+
+[skills.stuck]
+description = "Get unstuck when you're blocked on a problem."
+aliases = ["help-me", "unblock"]
+argument_hint = "<what you're stuck on>"
+prompt = '''
+I'm stuck on: $ARGUMENTS
+
+Take a step back and think about this differently:
+1. What have I already tried?
+2. What assumptions am I making that might be wrong?
+3. Is there a simpler approach?
+4. Should I ask the user for clarification?
+'''
+
+[skills.verify]
+description = "Verify that recent changes work correctly end-to-end."
+aliases = ["check", "validate"]
+prompt = '''
+Verify the recent changes$ARGUMENTS_SUFFIX.
+Identify the intended behavior and affected code. Run the most relevant existing checks and inspect their results. Check important edge cases and regressions without expanding scope. Report what passed, failed, or could not be tested; do not infer success from an unexecuted check.
+'''
+
+[skills.commit]
+description = "Create a git commit with a well-crafted message."
+aliases = []
+argument_hint = "<optional commit message hint>"
+prompt = '''
+Create a focused Git commit for the requested changes$ARGUMENTS_SUFFIX.
+Inspect git status, unstaged and staged diffs, and recent commit messages. Identify the requested scope and preserve unrelated user work and staging. If scope is ambiguous, clarify it before staging.
+Stage explicit paths or reviewed hunks, never a blanket git add. Inspect the staged diff for unrelated changes and secrets. Run the checks appropriate to the changes; report failures honestly.
+Use the repository's commit-message conventions and explain the change's purpose. Commit the reviewed changes. Use a temporary message file for multiline messages. Do not amend, push, bypass hooks, or alter Git identity unless requested. Report the commit hash, scope, checks, and remaining changes.
+'''
+
+[skills.loop]
+description = "Run a prompt or slash command on a recurring interval."
+aliases = []
+argument_hint = "<interval> <command>"
+prompt = '''
+Recurring task requested: $ARGUMENTS
+Check whether an actual scheduling tool is available. If so, establish the interval and task scope and use that tool. Otherwise explain that this session cannot schedule background work, and offer a one-time run. Do not simulate a scheduler or claim that future runs were scheduled.
+'''
