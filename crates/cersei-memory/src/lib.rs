@@ -36,6 +36,11 @@ pub trait Memory: Send + Sync {
     /// Store conversation messages for a session.
     async fn store(&self, session_id: &str, messages: &[Message]) -> Result<()>;
 
+    /// Persist a resumable checkpoint, including cumulative accounting when supported.
+    async fn checkpoint(&self, session_id: &str, messages: &[Message], _usage: &Usage) -> Result<()> {
+        self.store(session_id, messages).await
+    }
+
     /// Load conversation history for a session.
     async fn load(&self, session_id: &str) -> Result<Vec<Message>>;
 

@@ -92,6 +92,7 @@ pub struct Agent {
     event_filter: Option<Box<dyn Fn(&AgentEvent) -> bool + Send + Sync>>,
     cost_tracker: Arc<CostTracker>,
     auto_compact: bool,
+    context_state: parking_lot::Mutex<compact::ContextState>,
     compact_threshold: f64,
     tool_result_budget: usize,
     messages: Arc<parking_lot::Mutex<Vec<Message>>>,
@@ -105,6 +106,114 @@ impl Agent {
     /// guessed from the model name otherwise.
     pub fn context_window(&self) -> u64 {
         self.context_window
+    }
+
+    pub(crate) fn generation_options(&self) -> cersei_provider::ProviderOptions {
+        let mut options = cersei_provider::ProviderOptions::default();
+        if let Some(value) = self.top_p { options.set("top_p", value); }
+        if let Some(value) = self.min_p { options.set("min_p", value); }
+        if let Some(value) = &self.reasoning_effort { options.set("reasoning_effort", value); }
+        if let Some(value) = self.thinking_budget { options.set("thinking_budget", value); }
+        if let Some(value) = self.thinking_enabled { options.set("thinking", value); }
+        options
+    }
+
+    pub fn auto_compaction_paused(&self) -> bool {
+        self.context_state.lock().compact.disabled
+    }
+
+    pub fn context_input_budget(&self) -> u64 {
+        self.context_window.saturating_sub(u64::from(self.max_tokens) + 1024)
+    }
+
+    pub fn context_estimate(&self) -> u64 {
+        let mut messages = self.messages();
+        runner::apply_tool_result_budget(&mut messages, self.tool_result_budget);
+        let tools: Vec<_> = self.tools.iter().map(|t| t.to_definition()).collect();
+        self.context_state.lock().estimate(runner::input_size(&messages, &tools, self.system_prompt.as_deref()))
+    }
+
+    /// Summarize older complete turns, preserving the latest user turn and tool pairs.
+    pub async fn compact(&mut self, instructions: Option<&str>) -> Result<compact::CompactResult> {
+        self.compact_history(2, instructions).await
+    }
+
+    pub(crate) async fn compact_history(&self, keep_recent: usize, instructions: Option<&str>) -> Result<compact::CompactResult> {
+        let original = self.messages();
+        let tail = &original[original.len().saturating_sub(keep_recent)..];
+        let usable = self.context_window.saturating_sub(u64::from(self.max_tokens) + 1024);
+        let keep_recent = if runner::input_size(tail, &[], None) as u64 > usable / 2 { 2 } else { keep_recent };
+        let mut usage = Usage::default();
+        let result = tokio::select! {
+            biased;
+            _ = self.cancel_token.cancelled() => Err(CerseiError::Cancelled),
+            result = compact::compact_with_options(self.provider.as_ref(), &original,
+                self.model.as_deref().unwrap_or(""), keep_recent, instructions, self.context_window,
+                self.max_tokens, self.generation_options(), self.temperature, &mut usage) => result,
+        };
+        self.cumulative_usage.lock().merge(&usage);
+        self.cost_tracker.add(&usage);
+        let result = result?;
+        if self.cancel_token.is_cancelled() { return Err(CerseiError::Cancelled); }
+        if !result.messages.is_empty() {
+            if let (Some(memory), Some(session)) = (&self.memory, &self.session_id) {
+                memory.checkpoint(session, &result.messages, &self.usage()).await?;
+            }
+            *self.messages.lock() = result.messages.clone();
+            let mut state = self.context_state.lock();
+            state.measured_tokens = 0;
+            state.measured_bytes = 0;
+            state.compact.on_success();
+        }
+        Ok(result)
+    }
+
+    /// Attach explicitly selected session storage and its already-loaded context.
+    pub fn attach_session(&mut self, memory: Arc<dyn cersei_memory::Memory>, id: String, messages: Vec<Message>, usage: Usage) {
+        self.memory = Some(memory);
+        self.session_id = Some(id);
+        *self.messages.lock() = messages;
+        self.cost_tracker.add(&usage);
+        *self.cumulative_usage.lock() = usage;
+        *self.context_state.lock() = Default::default();
+        self.repair_interrupted_tools();
+    }
+
+    pub fn set_system_prompt(&mut self, prompt: String) {
+        if self.system_prompt.as_deref() != Some(&prompt) {
+            self.system_prompt = Some(prompt);
+            self.context_state.lock().measured_tokens = 0;
+        }
+    }
+
+    pub(crate) async fn persist_context(&self) -> Result<()> {
+        if let (Some(memory), Some(id)) = (&self.memory, &self.session_id) {
+            let messages = self.messages();
+            let usage = self.usage();
+            memory.checkpoint(id, &messages, &usage).await?;
+        }
+        Ok(())
+    }
+
+    /// Interrupted tools have unknown outcomes. Record that fact, never replay them.
+    pub(crate) fn repair_interrupted_tools(&self) {
+        let mut messages = self.messages.lock();
+        let mut pending: Vec<String> = Vec::new();
+        for message in messages.iter() {
+            for block in message.content_blocks() {
+                match block {
+                    ContentBlock::ToolUse { id, .. } => pending.push(id),
+                    ContentBlock::ToolResult { tool_use_id, .. } => pending.retain(|id| *id != tool_use_id),
+                    _ => {}
+                }
+            }
+        }
+        if !pending.is_empty() {
+            messages.push(Message::user_blocks(pending.into_iter().map(|id| ContentBlock::ToolResult {
+                tool_use_id: id, is_error: Some(true),
+                content: ToolResultContent::Text("Tool execution was interrupted; outcome is unknown. Verify the current state before retrying any action.".into()),
+            }).collect()));
+        }
     }
 
     pub fn builder() -> AgentBuilder {
@@ -177,6 +286,7 @@ impl Agent {
     /// turns without rebuilding the agent.
     pub fn set_thinking_enabled(&mut self, on: bool) {
         self.thinking_enabled = Some(on);
+        self.context_state.lock().measured_tokens = 0;
     }
 
     pub fn thinking_enabled(&self) -> Option<bool> {
@@ -186,6 +296,7 @@ impl Agent {
     /// Change effort between turns without resetting conversation history.
     pub fn set_reasoning_effort(&mut self, effort: Option<String>) {
         self.reasoning_effort = effort;
+        self.context_state.lock().measured_tokens = 0;
     }
 
     /// Subscribe to the broadcast channel (requires enable_broadcast on builder).
@@ -461,7 +572,10 @@ impl AgentBuilder {
         });
 
         // Resolved before the struct literal moves `self.model`.
-        let context_window = self.context_window.unwrap_or_else(|| {
+        if !self.compact_threshold.is_finite() || !(0.0..=1.0).contains(&self.compact_threshold) || self.compact_threshold == 0.0 {
+            return Err(CerseiError::Config("compact_threshold must be greater than 0 and at most 1".into()));
+        }
+        let context_window = self.context_window.filter(|w| *w > 0).unwrap_or_else(|| {
             crate::compact::context_window_for_model(self.model.as_deref().unwrap_or(""))
         });
 
@@ -493,6 +607,7 @@ impl AgentBuilder {
             event_filter: self.event_filter,
             cost_tracker: Arc::new(CostTracker::new()),
             auto_compact: self.auto_compact,
+            context_state: parking_lot::Mutex::new(Default::default()),
             compact_threshold: self.compact_threshold,
             tool_result_budget: self.tool_result_budget,
             messages: Arc::new(parking_lot::Mutex::new(Vec::new())),
@@ -507,5 +622,165 @@ impl AgentBuilder {
     /// Build + run in one shot.
     pub async fn run_with(self, prompt: &str) -> cersei_types::Result<AgentOutput> {
         self.build()?.run(prompt).await
+    }
+}
+
+#[cfg(test)]
+mod compaction_regressions {
+    use super::*;
+    use async_trait::async_trait;
+    use cersei_provider::{CompletionRequest, CompletionStream, ProviderCapabilities};
+    use std::sync::atomic::{AtomicU8, Ordering};
+    use tokio::sync::Notify;
+
+    struct Spy {
+        requests: Arc<parking_lot::Mutex<Vec<CompletionRequest>>>,
+        mode: Arc<AtomicU8>,
+        started: Arc<Notify>,
+    }
+    #[async_trait]
+    impl Provider for Spy {
+        fn name(&self) -> &str { "compaction-spy" }
+        fn context_window(&self, _: &str) -> u64 { 8192 }
+        fn capabilities(&self, _: &str) -> ProviderCapabilities { ProviderCapabilities::default() }
+        async fn complete(&self, request: CompletionRequest) -> Result<CompletionStream> {
+            let summary = request.system.as_deref().unwrap_or("").contains("Summarize conversation evidence");
+            self.requests.lock().push(request);
+            let mode = if summary { self.mode.load(Ordering::Relaxed) } else { 0 };
+            if mode == 3 { self.started.notify_one(); return std::future::pending().await; }
+            if mode == 4 { return Err(CerseiError::Provider("mock summary failure".into())); }
+            let text = match mode { 1 => "".into(), 5 => "oversized summary ".repeat(1000), _ => "Summary preserves the task and decisions.".into() };
+            let (tx, rx) = mpsc::channel(8);
+            for event in [
+                StreamEvent::MessageStart { id: "r".into(), model: "mock".into() },
+                StreamEvent::ContentBlockStart { index: 0, block_type: "text".into(), id: None, name: None },
+                StreamEvent::TextDelta { index: 0, text },
+                StreamEvent::ContentBlockStop { index: 0 },
+                StreamEvent::MessageDelta { stop_reason: Some(if mode == 2 { StopReason::MaxTokens } else { StopReason::EndTurn }),
+                    usage: Some(Usage { input_tokens: if summary { 50 } else { 6000 }, output_tokens: 10, ..Default::default() }) },
+                StreamEvent::MessageStop,
+            ] { tx.send(event).await.unwrap(); }
+            Ok(CompletionStream::new(rx))
+        }
+    }
+
+    fn fixture(window: u64) -> (Agent, Arc<parking_lot::Mutex<Vec<CompletionRequest>>>, Arc<AtomicU8>, Arc<Notify>) {
+        let requests = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let mode = Arc::new(AtomicU8::new(0));
+        let started = Arc::new(Notify::new());
+        let agent = Agent::builder().provider(Spy { requests: requests.clone(), mode: mode.clone(), started: started.clone() })
+            .model("mock").context_window(window).max_tokens(512).build().unwrap();
+        (agent, requests, mode, started)
+    }
+
+    fn history() -> Vec<Message> {
+        vec![Message::user("Earlier requirements ".repeat(100)), Message::assistant("Earlier answer ".repeat(100)),
+            Message::user("Latest task must stay verbatim"), Message::assistant("Latest answer")]
+    }
+
+    #[tokio::test]
+    async fn resuming_unanswered_tools_records_unknown_outcome_without_reexecution() {
+        let (mut agent, requests, _, _) = fixture(32768);
+        let memory = Arc::new(cersei_memory::InMemory::new());
+        let history = vec![Message::user("Earlier task"), Message::assistant_blocks(vec![ContentBlock::ToolUse {
+            id: "interrupted-call".into(), name: "Bash".into(), input: serde_json::json!({"command":"never reexecute automatically"}),
+        }])];
+        agent.attach_session(memory, "saved".into(), history, Usage::default());
+        assert!(requests.lock().is_empty());
+        let messages = agent.messages();
+        assert!(matches!(&messages.last().unwrap().content_blocks()[0], ContentBlock::ToolResult { tool_use_id, is_error: Some(true), .. } if tool_use_id == "interrupted-call"));
+        agent.persist_context().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn auto_compaction_survives_separate_user_prompts_and_counts_usage() {
+        let (agent, requests, _, _) = fixture(8192);
+        agent.run(&"Initial requirements ".repeat(100)).await.unwrap();
+        assert_eq!(requests.lock().len(), 1);
+        agent.reply("Continue the task").await.unwrap();
+        assert_eq!(requests.lock().len(), 3, "summary must run before second user prompt");
+        assert!(agent.messages()[0].get_all_text().contains("context_summary"));
+        assert_eq!(agent.context_state.lock().compact.compaction_count, 1);
+        assert_eq!(agent.usage().input_tokens, 12050);
+    }
+
+    #[tokio::test]
+    async fn configured_threshold_is_respected() {
+        let (mut agent, requests, _, _) = fixture(8192);
+        agent.compact_threshold = 1.0;
+        agent.run(&"Initial requirements ".repeat(50)).await.unwrap();
+        agent.reply("Continue").await.unwrap();
+        assert_eq!(requests.lock().len(), 2, "should not summarize below the configured threshold");
+    }
+
+    #[tokio::test]
+    async fn manual_compaction_preserves_tail_and_options_and_bounds_every_chunk() {
+        let (mut agent, requests, _, _) = fixture(4096);
+        agent.set_reasoning_effort(Some("spoon".into()));
+        agent.set_thinking_enabled(true);
+        let mut messages = vec![Message::user("Start ".repeat(800)),
+            Message::assistant_blocks(vec![ContentBlock::ToolUse { id: "t1".into(), name: "Read".into(), input: serde_json::json!({"file_path":"src/important.rs"}) }]),
+            Message::user_blocks(vec![ContentBlock::ToolResult { tool_use_id: "t1".into(), content: ToolResultContent::Text(format!("{} MIDDLE-EVIDENCE {}", "α".repeat(3000), "tail ".repeat(800))), is_error: Some(false) }]),
+            Message::assistant("Read complete")];
+        messages.extend(history().into_iter().skip(2));
+        *agent.messages.lock() = messages;
+        let result = agent.compact(Some("Preserve tests")).await.unwrap();
+        assert!(!result.messages.is_empty());
+        assert!(agent.messages()[0].get_all_text().contains("Latest task must stay verbatim"));
+        assert_eq!(agent.messages().last().unwrap().get_all_text(), "Latest answer");
+        let requests = requests.lock();
+        assert!(requests.len() > 1);
+        let transcript = requests.iter().map(|r| r.messages[0].get_all_text()).collect::<Vec<_>>().join("\n");
+        assert!(transcript.contains("MIDDLE-EVIDENCE"));
+        assert!(transcript.contains("src/important.rs"));
+        for request in requests.iter() {
+            assert!(request.tools.is_empty());
+            assert_eq!(request.options.get::<String>("reasoning_effort").as_deref(), Some("spoon"));
+            assert_eq!(request.options.get::<bool>("thinking"), Some(true));
+            assert!(runner::input_size(&request.messages, &[], request.system.as_deref()) as u64 + u64::from(request.max_tokens) + 1024 <= 4096);
+        }
+    }
+
+    #[tokio::test]
+    async fn empty_truncated_failed_or_oversized_summaries_never_replace_history() {
+        for value in [1, 2, 4, 5] {
+            let (mut agent, _, mode, _) = fixture(8192);
+            *agent.messages.lock() = history();
+            let before = serde_json::to_string(&agent.messages()).unwrap();
+            mode.store(value, Ordering::Relaxed);
+            let result = agent.compact(None).await;
+            assert!(result.is_err() || result.unwrap().messages.is_empty());
+            assert_eq!(serde_json::to_string(&agent.messages()).unwrap(), before);
+            if value != 4 { assert!(agent.usage().input_tokens > 0); }
+        }
+    }
+
+    #[tokio::test]
+    async fn cancel_manual_compaction_preserves_history_and_closes_request() {
+        let (mut agent, _, mode, started) = fixture(8192);
+        mode.store(3, Ordering::Relaxed);
+        *agent.messages.lock() = history();
+        let before = serde_json::to_string(&agent.messages()).unwrap();
+        let token = agent.cancel_token.clone();
+        let (result, ()) = tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::join!(agent.compact(None), async { started.notified().await; token.cancel(); })
+        }).await.unwrap();
+        assert!(matches!(result, Err(CerseiError::Cancelled)));
+        assert_eq!(serde_json::to_string(&agent.messages()).unwrap(), before);
+    }
+
+    #[tokio::test]
+    async fn breaker_persists_across_prompts_and_successful_manual_compact_resets_it() {
+        let (mut agent, _, mode, _) = fixture(32768);
+        mode.store(4, Ordering::Relaxed);
+        *agent.messages.lock() = history();
+        for _ in 0..3 {
+            agent.context_state.lock().observe(30000, 100000);
+            agent.run("Continue").await.unwrap();
+        }
+        assert!(agent.context_state.lock().compact.disabled);
+        mode.store(0, Ordering::Relaxed);
+        agent.compact(None).await.unwrap();
+        assert!(!agent.context_state.lock().compact.disabled);
     }
 }

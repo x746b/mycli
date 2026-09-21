@@ -197,6 +197,14 @@ pub fn reset_tokens() {
     begin_prompt_locked(&mut state);
 }
 
+/// A rewritten context has no reusable prefix measurement; retain session totals.
+pub fn after_compaction(estimated_input: u64) {
+    let mut state = STATE.lock();
+    state.last_in = estimated_input;
+    state.prev_turn_input = None;
+    begin_prompt_locked(&mut state);
+}
+
 fn begin_prompt_locked(state: &mut State) {
     state.pp_tokens = 0;
     state.pp_time = Duration::ZERO;
@@ -286,11 +294,7 @@ pub fn update_usage(usage: &cersei_types::Usage) {
         let mut state = STATE.lock();
         state.total_in = usage.input_tokens;
         state.total_out = usage.output_tokens;
-        // The last turn's input tokens approximate the live conversation size.
-        let delta = usage.input_tokens.saturating_sub(state.prev_cumulative_in);
-        if delta > 0 {
-            state.last_in = delta;
-        }
+        // Context size comes from record_turn, not a cumulative multi-call delta.
         state.prev_cumulative_in = usage.input_tokens;
     }
     draw();

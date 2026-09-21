@@ -12,6 +12,8 @@ mod render;
 mod repl;
 mod status;
 mod skills;
+mod sessions;
+mod memory;
 mod ui;
 mod web_search;
 
@@ -28,6 +30,10 @@ pub struct Cli {
     /// Prompt to run in single-shot mode (omit for REPL)
     #[arg(value_name = "PROMPT")]
     pub prompt: Option<String>,
+
+    /// Resume a saved session by ID/name; no value selects the latest session
+    #[arg(long, num_args = 0..=1, default_missing_value = "latest", conflicts_with_all = ["local", "cloud", "model", "base_url", "api_key", "directory"])]
+    pub resume: Option<String>,
 
     /// Model to use (default: from config or first available on oMLX)
     #[arg(short, long)]

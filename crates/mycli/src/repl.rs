@@ -293,6 +293,11 @@ impl MyHelper {
             commands: vec![
                 "/help",
                 "/clear",
+                "/compact",
+                "/sessions",
+                "/resume",
+                "/memory",
+                "/remember",
                 "/model",
                 "/models",
                 "/cloud",
@@ -511,10 +516,16 @@ fn omlx_context_window(base_url: &str, api_key: &str, model: &str) -> Option<u64
         fetch_models(base_url, api_key)?
             .iter()
             .find(|m| m.get("id").and_then(|v| v.as_str()) == Some(model))
-            .and_then(|m| m.get("max_model_len"))
-            .and_then(|v| v.as_u64())
-            .filter(|len| *len > 0)
+            .and_then(model_context_window)
+
     })
+}
+
+/// Prefer configured serving limits; architectural maxima are not deployment limits.
+fn model_context_window(model: &serde_json::Value) -> Option<u64> {
+    ["max_model_len", "context_window", "context_length", "max_context_length"]
+        .iter().find_map(|key| model.get(key).and_then(|value| value.as_u64()
+            .or_else(|| value.as_str().and_then(|s| s.parse().ok()))).filter(|value| *value > 0))
 }
 
 /// The `data` array from `/v1/models`, or `None` when it cannot be read.
@@ -642,7 +653,7 @@ fn draw_picker(w: &mut impl io::Write, models: &[String], sel: usize, current: &
 }
 
 
-fn build_system_prompt(config: &Config, prompts: &crate::prompts::Prompts, model: &str) -> String {
+fn build_system_prompt(config: &Config, prompts: &crate::prompts::Prompts, model: &str, window: u64) -> String {
     let has_search = is_local_provider(config) && config::resolve_tool_tier(config) != "simple";
     let memory_manager = MemoryManager::new(&config.working_dir);
     let memory_content = memory_manager.build_context();
@@ -651,6 +662,7 @@ fn build_system_prompt(config: &Config, prompts: &crate::prompts::Prompts, model
     let now = chrono::Local::now();
 
     let mut prompt = prompts.render(&config.persona, tier, model);
+    prompt.push_str(&crate::memory::prompt(window, config.max_tokens));
 
     if has_search {
         prompt.push_str(
@@ -752,7 +764,7 @@ async fn build_agent(config: &Config, prompts: &crate::prompts::Prompts, skills:
         None
     };
 
-    let system_prompt = build_system_prompt(config, prompts, &resolved_model);
+    let system_prompt = build_system_prompt(config, prompts, &resolved_model, context_window.unwrap_or_else(|| cersei_agent::compact::context_window_for_model(&resolved_model)));
     let tier = config::resolve_tool_tier(config);
     let mut tools = build_tools(tier, &config.working_dir, skills);
     let mut tool_names: Vec<String> = tools.iter().map(|t| t.name().to_string()).collect();
@@ -1008,9 +1020,11 @@ async fn run_prompt(
             // Compaction rewrites the conversation and costs a model call, so
             // it is announced rather than done silently.
             AgentEvent::CompactStart { messages_before, .. } => {
-                renderer.notice(&format!("context full — compacting {messages_before} messages"));
+                renderer.notice(&format!("context budget reached — compacting {messages_before} messages"));
             }
+            AgentEvent::Status(message) => renderer.notice(&message),
             AgentEvent::CompactEnd { messages_after, tokens_freed } => {
+                status::after_compaction(agent.context_estimate());
                 renderer.notice(&format!(
                     "compacted to {messages_after} messages (~{tokens_freed} tokens freed)"
                 ));
@@ -1297,6 +1311,9 @@ enum CommandResult {
     SwitchTier(String),
     SwitchPersona(String),
     ReloadPrompts,
+    Compact(String),
+    Memory(String),
+    Remember(String),
     Thinking(String),
     Reasoning(String),
     LaunchBenchmark(Vec<String>),
@@ -1358,6 +1375,11 @@ fn handle_command(cmd: &str, args: &str, config: &Config, current_model: &str, p
             eprintln!("  /mcp               Show MCP server status");
             eprintln!("  /mcp verbose       List all MCP tools grouped by server");
             eprintln!("  /usage             Show cloud provider balances");
+            eprintln!("  /sessions          Pick a saved session; list, rename [id] <name>, path");
+            eprintln!("  /resume [id|name]   Resume a saved session (empty opens picker)");
+            eprintln!("  /memory            Show global memory; path, topics, reload");
+            eprintln!("  /remember <fact>   Add a durable fact to global MEMORY.md");
+            eprintln!("  /compact [focus]    Summarize older context; /compact status shows usage");
             eprintln!("  /skill [name args]  Pick/run a skill; list, paths, reload");
             eprintln!("  /prompts path|reload  Inspect or reload system-prompts.toml");
             eprintln!("  /persona           Show or switch persona from system-prompts.toml");
@@ -1379,7 +1401,7 @@ fn handle_command(cmd: &str, args: &str, config: &Config, current_model: &str, p
         "model" | "models" => {
             if args.is_empty() {
                 // /model always uses the default local endpoint and its key.
-                let fresh = config::load();
+                let fresh = config::load_for_dir(&config.working_dir);
                 let base = &fresh.base_url;
                 let api_key = if fresh.api_key.is_empty() { "mycli" } else { &fresh.api_key };
                 let models = list_omlx_models(base, api_key);
@@ -1423,7 +1445,7 @@ fn handle_command(cmd: &str, args: &str, config: &Config, current_model: &str, p
         }
         "local" => {
             if args.is_empty() {
-                let fresh = config::load();
+                let fresh = config::load_for_dir(&config.working_dir);
                 let names: Vec<String> = fresh.local.keys().cloned().collect();
                 if names.is_empty() {
                     eprintln!("  No local profiles. Add [local.<name>] to ~/.config/mycli/config.toml");
@@ -1535,6 +1557,9 @@ fn handle_command(cmd: &str, args: &str, config: &Config, current_model: &str, p
             show_cloud_balances(config);
             CommandResult::Continue
         }
+        "memory" => CommandResult::Memory(args.trim().to_string()),
+        "remember" => CommandResult::Remember(args.trim().to_string()),
+        "compact" => CommandResult::Compact(args.trim().to_string()),
         "prompts" => match args.trim() {
             "reload" => CommandResult::ReloadPrompts,
             "path" => {
@@ -1658,10 +1683,16 @@ async fn rebuild_agent(
     renderer: &mut Renderer,
     prompts: &crate::prompts::Prompts,
     skills: &crate::skills::Skills,
+    session: &crate::sessions::Journal,
 ) -> bool {
     let new_cancel = CancellationToken::new();
     match build_agent(config, prompts, skills, new_cancel).await {
-        Ok((new_agent, resolved)) => {
+        Ok((mut new_agent, resolved)) => {
+            session.attach(&mut new_agent, false);
+            if let Err(error) = session.sync(&new_agent, config, &resolved) {
+                renderer.error(&format!("Session checkpoint failed: {error:#}"));
+                return false;
+            }
             *agent = new_agent;
             render::forget_model_observations();
             *current_model = resolved.clone();
@@ -1677,6 +1708,17 @@ async fn rebuild_agent(
             false
         }
     }
+}
+
+fn select_session(selector: &str, current: &str) -> anyhow::Result<Option<String>> {
+    if !selector.is_empty() && selector != "latest" { return crate::sessions::resolve(selector).map(Some); }
+    let sessions: Vec<_> = crate::sessions::list()?.into_iter().filter(|s| s.metadata.id != current).collect();
+    if selector == "latest" { return Ok(sessions.first().map(|s| s.metadata.id.clone())); }
+    if sessions.is_empty() { eprintln!("No saved sessions."); return Ok(None); }
+    let labels: Vec<_> = sessions.iter().map(|s| format!("{} | {} | {} | {} messages | {}",
+        s.metadata.name, s.metadata.id, s.metadata.model, s.message_count, s.metadata.cwd.display())).collect();
+    Ok(interactive_picker(&labels, "", "Select session to resume")
+        .and_then(|label| labels.iter().position(|value| *value == label)).map(|i| sessions[i].metadata.id.clone()))
 }
 
 // ─── Main entry ─────────────────────────────────────────────────────────────
@@ -1761,8 +1803,29 @@ pub async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
     }
 
     let mut config = config;
+    let resumed = if let Some(selector) = &cli.resume {
+        let id = crate::sessions::resolve(selector)?;
+        let journal = crate::sessions::Journal::open(&id)?;
+        config = crate::sessions::resume_config(&journal.snapshot().metadata)?;
+        config::apply_cli_overrides(&cli, &mut config)?;
+        Some(journal)
+    } else { None };
     let mut prompts = crate::prompts::Prompts::startup();
     let mut skills = crate::skills::Skills::startup(&config);
+    // These local commands need neither a provider connection nor a new session.
+    match cli.prompt.as_deref().map(str::trim) {
+        Some("/sessions list") => {
+            for item in crate::sessions::list()? {
+                println!("{} | {} | {} | {} messages", item.metadata.id, item.metadata.name, item.metadata.model, item.message_count);
+            }
+            return Ok(());
+        }
+        Some("/memory path" | "/memory paths") => {
+            println!("{}\n{}", crate::memory::path().display(), crate::memory::topics().display());
+            return Ok(());
+        }
+        _ => {}
+    }
     // Catalog inspection is local and must not depend on provider availability.
     match cli.prompt.as_deref().map(str::trim) {
         Some("/skill list") => {
@@ -1772,10 +1835,21 @@ pub async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
         Some("/skill paths" | "/skill path") => { println!("{}", skills.path_info()); return Ok(()); }
         _ => {}
     }
+    crate::memory::initialize()?;
     config.persona = prompts.resolve_persona(&config.persona).to_owned();
     render::set_thinking_visible(config.show_thinking);
     render::logo();
     let (mut agent, mut current_model) = build_agent(&config, &prompts, &skills, cancel_token.clone()).await?;
+    let mut session = if let Some(journal) = resumed {
+        journal.attach(&mut agent, true);
+        journal
+    } else {
+        let journal = crate::sessions::Journal::create(crate::sessions::Metadata::new(&config, &current_model, agent.context_window()))?;
+        journal.attach(&mut agent, false);
+        journal
+    };
+    session.sync(&agent, &config, &current_model)?;
+    eprintln!("  Session: {} ({})", session.snapshot().metadata.name, session.snapshot().metadata.id);
     render::session_info(&config, &current_model);
 
     // Single-shot mode
@@ -1842,11 +1916,13 @@ pub async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
     renderer.pause_flag = Some(&PERMISSION_ACTIVE);
     renderer.decision_seq = Some(&PERMISSION_SEQ);
     renderer.tool_start_seq = Some(&TOOL_START_SEQ);
-    let mut is_first = true;
+    let mut is_first = agent.messages().is_empty();
 
     status::setup();
     status::set_reasoning(config.reasoning_effort.as_deref(), !is_local_provider(&config) || !config.reasoning_choices(&current_model).is_empty() || config.reasoning_effort.is_some());
     status::set_context(&current_model, &config.provider, &config.persona, &config.working_dir, agent.context_window());
+    status::update_usage(&agent.usage());
+    if !agent.messages().is_empty() { status::after_compaction(agent.context_estimate()); }
     status::draw();
 
     loop {
@@ -1880,7 +1956,7 @@ pub async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                 }
                 "path" | "paths" => { eprintln!("{}", skills.path_info()); continue; }
                 "reload" => {
-                    let mut fresh = config::load();
+                    let mut fresh = config::load_for_dir(&config.working_dir);
                     fresh.working_dir = config.working_dir.clone();
                     match skills.reload(&fresh) {
                         Ok(()) => { config.skill_paths = fresh.skill_paths; renderer.notice("Skills reloaded; conversation preserved."); }
@@ -1921,10 +1997,86 @@ pub async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                 Some(pos) => (&trimmed[..pos], trimmed[pos..].trim()),
                 None => (trimmed, ""),
             };
+            if ["sessions", "resume"].contains(&cmd) {
+                if cmd != "resume" && args == "list" {
+                    for item in crate::sessions::list()? {
+                        eprintln!("{} | {} | {} | {} messages", item.metadata.id, item.metadata.name, item.metadata.model, item.message_count);
+                    }
+                    continue;
+                }
+                if cmd != "resume" && args == "path" { eprintln!("{}", session.path().display()); continue; }
+                if cmd != "resume" && (args == "rename" || args.starts_with("rename ")) {
+                    let rest = args.strip_prefix("rename").unwrap().trim();
+                    let (first, tail) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+                    let (id, mut name) = if uuid::Uuid::parse_str(first).is_ok() && !tail.trim().is_empty() {
+                        (first.to_string(), tail.trim().to_string())
+                    } else { (session.snapshot().metadata.id, rest.to_string()) };
+                    if name.is_empty() {
+                        let Ok(value) = editor.readline("Session name: ") else { continue; };
+                        name = value;
+                    }
+                    let result = if id == session.snapshot().metadata.id { session.rename(&name) }
+                        else { crate::sessions::Journal::open(&id).and_then(|journal| journal.rename(&name)) };
+                    match result {
+                        Ok(()) => renderer.notice(&format!("Session named: {}", name.trim())),
+                        Err(error) => renderer.error(&format!("Rename failed: {error:#}")),
+                    }
+                    continue;
+                }
+                let selector = args.strip_prefix("resume ").unwrap_or(args).trim();
+                let resumed = async {
+                    let Some(id) = select_session(selector, &session.snapshot().metadata.id)? else { return Ok::<_, anyhow::Error>(None); };
+                    if id == session.snapshot().metadata.id { return Ok(None); }
+                    let journal = crate::sessions::Journal::open(&id)?;
+                    let mut next = crate::sessions::resume_config(&journal.snapshot().metadata)?;
+                    next.persona = prompts.resolve_persona(&next.persona).to_owned();
+                    let next_skills = crate::skills::Skills::startup(&next);
+                    let (mut next_agent, model) = build_agent(&next, &prompts, &next_skills, CancellationToken::new()).await?;
+                    journal.attach(&mut next_agent, true);
+                    journal.sync(&next_agent, &next, &model)?;
+                    Ok(Some((journal, next, next_skills, next_agent, model)))
+                }.await;
+                match resumed {
+                    Ok(Some((journal, next, next_skills, next_agent, model))) => {
+                        session = journal; config = next; skills = next_skills; agent = next_agent; current_model = model;
+                        is_first = agent.messages().is_empty();
+                        render::forget_model_observations();
+                        status::set_reasoning(config.reasoning_effort.as_deref(), !is_local_provider(&config) || !config.reasoning_choices(&current_model).is_empty() || config.reasoning_effort.is_some());
+                        render::set_thinking_visible(config.show_thinking);
+                        status::reset_tokens(); status::update_usage(&agent.usage());
+                        status::after_compaction(agent.context_estimate());
+                        status::set_context(&current_model, &config.provider, &config.persona, &config.working_dir, agent.context_window());
+                        renderer.notice(&format!("Resumed {} ({})", session.snapshot().metadata.name, session.snapshot().metadata.id));
+                    }
+                    Ok(None) => {}
+                    Err(error) => renderer.error(&format!("Resume failed; current session retained: {error:#}")),
+                }
+                continue;
+            }
             match handle_command(cmd, args, &config, &current_model, &prompts) {
-                CommandResult::Exit => break,
+                CommandResult::Exit => {
+                    session.sync(&agent, &config, &current_model)?;
+                    let closing = session.snapshot().metadata;
+                    renderer.notice(&format!("Closing {} ({})", closing.name, closing.id));
+                    loop {
+                        let answer = editor.readline("Keep this session archive and resumable context? [Y/n] ");
+                        match answer.as_deref().map(str::trim).map(str::to_ascii_lowercase) {
+                            Ok(value) if value == "n" || value == "no" => {
+                                match session.delete() {
+                                    Ok(()) => renderer.notice("Session deleted. Global memory kept."),
+                                    Err(error) => renderer.error(&format!("Could not delete session: {error:#}")),
+                                }
+                                break;
+                            }
+                            Ok(value) if value.is_empty() || value == "y" || value == "yes" => { renderer.notice("Session kept."); break; }
+                            Err(_) => { renderer.notice("Session kept."); break; }
+                            _ => renderer.notice("Please enter Y or N."),
+                        }
+                    }
+                    break;
+                },
                 CommandResult::SwitchModel(new_model) => {
-                    let fresh = config::load();
+                    let fresh = config::load_for_dir(&config.working_dir);
                     let mut next_config = config.clone();
                     next_config.restore_model_defaults(&fresh);
                     next_config.provider = "omlx".into();
@@ -1932,20 +2084,20 @@ pub async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                     next_config.api_key = fresh.api_key;
                     next_config.model = new_model;
                     next_config.persona = prompts.resolve_persona(&next_config.persona).to_owned();
-                    if rebuild_agent(&mut agent, &mut current_model, &next_config, &mut is_first, &mut renderer, &prompts, &skills).await {
+                    if rebuild_agent(&mut agent, &mut current_model, &next_config, &mut is_first, &mut renderer, &prompts, &skills, &session).await {
                         config = next_config;
                         render::set_thinking_visible(config.show_thinking);
                         status::reset_tokens();
                     }
                 }
                 CommandResult::SwitchLocal(name) => {
-                    let fresh = config::load();
+                    let fresh = config::load_for_dir(&config.working_dir);
                     let mut source = config.clone();
                     source.local = fresh.local.clone();
                     match source.with_local_profile(&name, &fresh) {
                         Ok(mut next_config) => {
                             next_config.persona = prompts.resolve_persona(&next_config.persona).to_owned();
-                            if rebuild_agent(&mut agent, &mut current_model, &next_config, &mut is_first, &mut renderer, &prompts, &skills).await {
+                            if rebuild_agent(&mut agent, &mut current_model, &next_config, &mut is_first, &mut renderer, &prompts, &skills, &session).await {
                                 config = next_config;
                                 render::set_thinking_visible(config.show_thinking);
                                 status::reset_tokens();
@@ -1958,10 +2110,10 @@ pub async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                     // Resolve and pick on a copy: Esc must leave the active
                     // provider, credentials, effort and conversation untouched.
                     let mut next_config = config.clone();
-                    next_config.restore_model_defaults(&config::load());
+                    next_config.restore_model_defaults(&config::load_for_dir(&config.working_dir));
                     if cloud_name == "omlx" {
                         // Back to local
-                        let fresh = config::load();
+                        let fresh = config::load_for_dir(&config.working_dir);
                         next_config.provider = "omlx".into();
                         next_config.base_url = fresh.base_url;
                         next_config.api_key = fresh.api_key;
@@ -2012,7 +2164,7 @@ pub async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                         agent.set_reasoning_effort(next_config.reasoning_effort.clone());
                         config = next_config;
                         renderer.notice(&format!("reasoning effort → {}", config.reasoning_effort.as_deref().unwrap_or("default")));
-                    } else if rebuild_agent(&mut agent, &mut current_model, &next_config, &mut is_first, &mut renderer, &prompts, &skills).await {
+                    } else if rebuild_agent(&mut agent, &mut current_model, &next_config, &mut is_first, &mut renderer, &prompts, &skills, &session).await {
                         config = next_config;
                         render::set_thinking_visible(config.show_thinking);
                         status::reset_tokens();
@@ -2020,14 +2172,63 @@ pub async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                 }
                 CommandResult::SwitchTier(tier) => {
                     config.tool_tier = tier;
-                    rebuild_agent(&mut agent, &mut current_model, &config, &mut is_first, &mut renderer, &prompts, &skills).await;
+                    rebuild_agent(&mut agent, &mut current_model, &config, &mut is_first, &mut renderer, &prompts, &skills, &session).await;
                 }
                 CommandResult::SwitchPersona(persona) => {
                     let mut next_config = config.clone();
                     next_config.persona = persona;
-                    if rebuild_agent(&mut agent, &mut current_model, &next_config, &mut is_first, &mut renderer, &prompts, &skills).await {
+                    if rebuild_agent(&mut agent, &mut current_model, &next_config, &mut is_first, &mut renderer, &prompts, &skills, &session).await {
                         config = next_config;
                         renderer.notice(&format!("persona → {}", config.persona));
+                    }
+                }
+                CommandResult::Memory(args) => {
+                    match args.as_str() {
+                        "" | "show" => eprintln!("{}\n{}", crate::memory::path().display(), crate::memory::read_bounded(65536)?),
+                        "path" | "paths" => eprintln!("{}\n{}", crate::memory::path().display(), crate::memory::topics().display()),
+                        "topics" => {
+                            for entry in std::fs::read_dir(crate::memory::topics())?.flatten() {
+                                if entry.path().extension().is_some_and(|e| e == "md") { eprintln!("{}", entry.path().display()); }
+                            }
+                        }
+                        "reload" => {
+                            agent.set_system_prompt(build_system_prompt(&config, &prompts, &current_model, agent.context_window()));
+                            renderer.notice("Global memory reloaded; conversation preserved.");
+                        }
+                        _ => renderer.notice("Usage: /memory [show|path|topics|reload]"),
+                    }
+                }
+                CommandResult::Remember(fact) => {
+                    match crate::memory::remember(&fact) {
+                        Ok(added) => {
+                            agent.set_system_prompt(build_system_prompt(&config, &prompts, &current_model, agent.context_window()));
+                            renderer.notice(if added { "Saved to global MEMORY.md." } else { "That fact is already in MEMORY.md." });
+                        }
+                        Err(error) => renderer.error(&format!("Memory not updated: {error:#}")),
+                    }
+                }
+                CommandResult::Compact(focus) => {
+                    if focus == "status" {
+                        renderer.notice(&format!("Context: ~{} input tokens / {} window ({} usable for input); {} messages. Auto-compaction: {}. Between-request counts are conservative estimates.",
+                            agent.context_estimate(), agent.context_window(), agent.context_input_budget(), agent.messages().len(), if agent.auto_compaction_paused() { "paused; /compact retries" } else { "ready" }));
+                        continue;
+                    }
+                    let token = arm_turn_cancel();
+                    agent.set_cancel_token(token.clone());
+                    running.store(true, Ordering::Relaxed);
+                    renderer.notice("Compacting older context… Esc or Ctrl+C cancels; original history is retained on failure.");
+                    let result = {
+                        let _keys = keys::KeyWatcher::start(token);
+                        agent.compact((!focus.is_empty()).then_some(focus.as_str())).await
+                    };
+                    running.store(false, Ordering::Relaxed);
+                    status::update_usage(&agent.usage());
+                    status::after_compaction(agent.context_estimate());
+                    match result {
+                        Ok(result) if result.messages.is_empty() => renderer.notice("Nothing compacted: no suitable older context, or the summary would not reduce it."),
+                        Ok(result) => renderer.notice(&format!("Compacted {} → {} messages; ~{} tokens freed. Conversation preserved.",
+                            result.messages_before, result.messages_after, result.tokens_freed_estimate)),
+                        Err(error) => renderer.error(&format!("Compaction stopped; history unchanged: {error}")),
                     }
                 }
                 CommandResult::ReloadPrompts => {
@@ -2035,7 +2236,7 @@ pub async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                         Ok(next_prompts) => {
                             let mut next_config = config.clone();
                             next_config.persona = next_prompts.resolve_persona(&config.persona).to_owned();
-                            if rebuild_agent(&mut agent, &mut current_model, &next_config, &mut is_first, &mut renderer, &next_prompts, &skills).await {
+                            if rebuild_agent(&mut agent, &mut current_model, &next_config, &mut is_first, &mut renderer, &next_prompts, &skills, &session).await {
                                 prompts = next_prompts;
                                 config = next_config;
                                 renderer.notice("Prompts reloaded; conversation reset (same as persona switching).");
@@ -2075,6 +2276,7 @@ pub async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                 CommandResult::LaunchBenchmark(args) => launch_benchmark(&args, &mut renderer),
                 CommandResult::Continue => {}
             }
+            session.sync(&agent, &config, &current_model)?;
             status::set_reasoning(config.reasoning_effort.as_deref(), !is_local_provider(&config) || !config.reasoning_choices(&current_model).is_empty() || config.reasoning_effort.is_some());
             status::set_context(&current_model, &config.provider, &config.persona, &config.working_dir, agent.context_window());
             status::draw();
@@ -2095,6 +2297,7 @@ pub async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
             Err(e) => renderer.error(&e.to_string()),
         }
         running.store(false, Ordering::Relaxed);
+        session.sync(&agent, &config, &current_model)?;
     }
 
     status::teardown();
@@ -2165,6 +2368,13 @@ mod output_view_terminal_tests {
 #[cfg(test)]
 mod prompt_command_tests {
     use super::*;
+
+    #[test]
+    fn context_metadata_uses_deployment_limit_before_fallback_fields() {
+        assert_eq!(model_context_window(&serde_json::json!({"max_model_len": 32768, "context_length": 262144})), Some(32768));
+        assert_eq!(model_context_window(&serde_json::json!({"context_length": "262144"})), Some(262144));
+        assert_eq!(model_context_window(&serde_json::json!({"context_window": 0})), None);
+    }
 
     #[test]
     fn picker_limits_rows_and_flattens_long_labels() {

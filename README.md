@@ -2,6 +2,11 @@
 
 Lightweight AI coding CLI for testing LLM capabilities — especially local models running on [oMLX](https://github.com/jundot/omlx). Switch between local and cloud models (Kimi, DeepSeek, Gemini, OpenAI), connect MCP tools over stdio or HTTP, and inspect highlighted code and full tool output directly in the terminal.
 
+**1.9.8:** Resumable sessions now retain an append-only transcript and active-context
+checkpoint. `/sessions rename` assigns names; `/quit` asks whether to keep the session.
+Global `MEMORY.md`, `/remember`, and manual `/compact` are available, with improved
+automatic compaction and model-specific context accounting.
+
 **1.9.7:** `/skill` now lists and runs internal and external skills directly.
 Edit internal templates in `~/.config/mycli/skills-internal.toml`; add search roots
 with `skill_paths`, and refresh with `/skill reload`. Claude-style names and
@@ -28,7 +33,7 @@ $ mycli
  | | | | | | |_| | |____| |____| |
  |_| |_| |_|\__, |\_____|______|_|
              __/ |
-            |___/           v1.9.7
+            |___/           v1.9.8
 
   tools [medium]: Read, Write, Bash, Edit, Glob, Grep, WebSearch
   omlx · Qwen3.8-27B · tools:medium · max_turns:30 · /opt/mycli
@@ -283,6 +288,7 @@ mycli --cloud deepseek -y "refactor main.rs"   # auto-approve tools
 | `--local <name>` | Load a named `[local.<name>]` profile |
 | `--reasoning <level>` | Model reasoning effort; `default` uses the server default |
 | `-t, --tools <tier>` | Tool tier: `simple`, `medium`, `full`, or `auto` (default) |
+| `--resume [id/name]` | Resume saved context; omitted selector uses the latest session |
 | `-p, --persona <name>` | Persona from `system-prompts.toml`; `code` by default, `neutral` for empty persona text |
 | `-y, --yes` | Auto-approve all tool permissions |
 | `--no-thinking` | Start with reasoning off — at the model level where the server supports it |
@@ -317,6 +323,12 @@ mycli --cloud deepseek -y "refactor main.rs"   # auto-approve tools
 | `/grade` | Select and grade saved benchmark results with a configured cloud provider or Codex |
 | `/thinking [on\|off]` | Turn reasoning on or off **at the model level** (see below) |
 | `/thinking last` | Reprint the last reasoning block |
+| `/sessions` | Pick a saved session; `list`, `path`, or `rename [id] <name>` |
+| `/resume [id/name]` | Resume by ID/name, or open the session picker |
+| `/memory` | Show global memory; `path`, `topics`, or `reload` |
+| `/remember <fact>` | Append a durable fact to global `MEMORY.md` |
+| `/compact [focus]` | Summarize older conversation; optional focus instructions |
+| `/compact status` | Show estimated input usage and resolved context budget |
 | `/clear` | Clear screen |
 | `/exit` | Exit |
 
@@ -615,32 +627,56 @@ window.
 
 ### Context Window
 
-Taken from the first of these that answers:
-
-1. `context_window` in the config — on a cloud profile, or top-level for the default provider.
-2. What a local server states: oMLX reports `max_model_len` on `/v1/models`.
-3. A guess from the model name.
-
-The guess is coarse — an unrecognised id falls back to 32,768, and a 400k model
-treated as 32k shows a full context bar and compacts far too early. Set it
-explicitly for any cloud model it does not recognise:
+Window precedence: profile/top-level `context_window`, local server metadata
+(`/v1/models`, including oMLX's `max_model_len`), then a conservative model-name
+fallback. A profile's window does not follow you onto another provider. Set an
+explicit limit when a proxy or local deployment uses a smaller window than the model:
 
 ```toml
-[cloud.openai]
-model = "gpt-5.6-luna"
-context_window = 400000   # tokens the model can hold
-# max_tokens is a different setting: the cap on a single response
+[local.custom]
+model = "your-model-id"
+context_window = 32768
+max_tokens = 4096  # response cap; reserved separately from input space
 ```
 
-A profile's window applies while that profile is active; the top-level setting
-describes the default provider and does not follow you onto a cloud one.
+Automatic compaction checks before each request, including subsequent user prompts,
+at 90% of the input budget after reserving output and framing space. It summarizes
+older context in bounded chunks and preserves recent turns and tool-call/result pairs.
+Provider token counts calibrate usage; counts between requests remain estimates.
 
-At 90% of the window the conversation is compacted: older turns are summarised
-and replaced with that summary, keeping the ten most recent messages. The split
-never cuts a tool round in half — a `tool_result` whose `tool_use` had just been
-summarised away would be rejected — so the boundary moves to the next plain user
-message, and compaction is skipped if there isn't one. Three consecutive
-failures disable it for the session.
+Use `/compact` to run it manually, `/compact preserve the API decisions` to focus
+the summary, or `/compact status` to inspect the budget. Esc/Ctrl+C cancels.
+Failed, empty, truncated, or non-shrinking summaries leave history intact. Three
+failed automatic attempts pause auto-compaction; successful manual compaction resets
+that state. See [context management and upstream comparison](docs/context-management.md).
+
+Compaction updates the active context checkpoint while retaining earlier messages
+in the session's append-only transcript. See session storage below.
+
+### Sessions and global memory
+
+Sessions are saved automatically under `~/.config/mycli/sessions/<id>/`:
+`transcript.jsonl` archives conversation events; `context.json` holds the latest
+resumable context. Compaction keeps the archive. `XDG_CONFIG_HOME` is supported.
+
+```text
+/sessions rename Rust harness work
+/sessions
+/resume <id-or-name>
+/memory
+/remember Prefer concise status updates.
+```
+
+`/quit` (also `/exit` and `/q`) asks **Keep this session? [Y/n]**. Y or Enter keeps
+both files; N deletes only that session folder. Ctrl+C and EOF keep saved sessions
+without asking. During generation, Ctrl+C first interrupts the request. Single-shot
+runs are kept automatically. Names are labels; IDs and folder paths stay unchanged.
+
+Global notes live in `~/.config/mycli/MEMORY.md`, with optional topic files in
+`memory/`. A bounded index is loaded into context; `/memory reload` applies external
+edits without resetting conversation. `/remember` saves and applies a fact directly.
+Deleting a session leaves global memory and typed-input `history` intact. Resume
+uses current configured credentials and serving limits. See [session details](docs/sessions.md).
 
 ### Web Search
 

@@ -21,7 +21,7 @@ aliases = ["mem", "save"]
 argument_hint = "<what to remember>"
 prompt = '''
 Save this information for future sessions: $ARGUMENTS
-Inspect the project's existing memory conventions. Update the appropriate memory file with concise, durable facts, avoiding duplicates and credentials. If no destination is established, ask where it should be stored. Report the file updated; do not claim persistence without writing it.
+Use the global MEMORY.md path supplied in the system prompt. Read it first, then add concise durable facts without duplicating existing notes. Scope project-specific facts to their project path. Put detailed topics in the supplied memory directory and link them from the index. Do not store credentials. Report the file actually updated; do not claim persistence without writing it.
 '''
 
 [skills.debug]

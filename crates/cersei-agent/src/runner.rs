@@ -3,7 +3,7 @@
 use crate::events::{AgentControl, AgentEvent};
 use crate::{Agent, AgentOutput, ToolCallRecord};
 use cersei_hooks::{HookAction, HookContext, HookEvent};
-use cersei_provider::{CompletionRequest, ProviderOptions, StreamAccumulator};
+use cersei_provider::{CompletionRequest, StreamAccumulator};
 use cersei_tools::permissions::{PermissionDecision, PermissionRequest};
 use cersei_tools::{ToolContext, ToolResult};
 use cersei_types::*;
@@ -38,28 +38,28 @@ pub fn apply_tool_result_budget(messages: &mut [Message], budget_bytes: usize) {
 /// Conservative byte-based input accounting, including schemas and system prompt.
 /// Provider tokenizers differ; use one token per serialized UTF-8 byte plus
 /// framing headroom instead of the unsafe prose-only chars/4 heuristic.
-fn input_size(messages: &[Message], tools: &[ToolDefinition], system: Option<&str>) -> usize {
+pub(crate) fn input_size(messages: &[Message], tools: &[ToolDefinition], system: Option<&str>) -> usize {
     serde_json::to_vec(&(messages, tools, system)).map(|v| v.len()).unwrap_or(usize::MAX)
 }
 
+#[cfg(test)]
 pub(crate) fn fit_request(messages: &mut [Message], tools: &[ToolDefinition], system: Option<&str>,
     window: u64, max_output: u32) -> Result<()> {
-    let budget = window.saturating_sub(max_output as u64).saturating_sub(1024) as usize;
-    // Measure non-result overhead, then allocate the available space to results.
-    let mut overhead = messages.to_vec();
-    apply_tool_result_budget(&mut overhead, 0);
-    let available = budget.saturating_sub(input_size(&overhead, tools, system));
-    let mut allowance = available;
-    apply_tool_result_budget(messages, allowance);
-    let mut size = input_size(messages, tools, system);
-    while size > budget && allowance > 0 {
+    fit_request_measured(messages, tools, system, window, max_output, &Default::default())
+}
+
+fn fit_request_measured(messages: &mut [Message], tools: &[ToolDefinition], system: Option<&str>,
+    window: u64, max_output: u32, state: &crate::compact::ContextState) -> Result<()> {
+    let budget = window.saturating_sub(max_output as u64).saturating_sub(1024);
+    let mut allowance = input_size(messages, tools, system);
+    while state.estimate(input_size(messages, tools, system)) > budget && allowance > 0 {
         allowance /= 2;
         apply_tool_result_budget(messages, allowance);
-        size = input_size(messages, tools, system);
     }
+    let size = state.estimate(input_size(messages, tools, system));
     if size > budget {
         return Err(CerseiError::Config(format!(
-            "Input exceeds conservative context budget ({size} bytes, {budget} available after reserving {max_output} output tokens and framing). Shorten the prompt, start a new session, reduce max_tokens, or configure the model's actual context_window. No request sent."
+            "Input exceeds conservative context budget (~{size} tokens, {budget} available after reserving {max_output} output tokens and framing). Try /compact, shorten the prompt, reduce max_tokens, or configure the model's actual context_window. No request sent."
         )));
     }
     Ok(())
@@ -71,6 +71,17 @@ async fn execute_cancellable(tool: &dyn cersei_tools::Tool, input: serde_json::V
         _ = cancel.cancelled() => ToolResult::error("Tool execution cancelled"),
         result = tool.execute(input, ctx) => result,
     }
+}
+
+async fn save_interrupted_response(agent: &Agent, text: &str, thinking: &str) -> Result<()> {
+    if text.is_empty() && thinking.is_empty() { return Ok(()); }
+    let mut message = Message::assistant(format!("{text}\n[Response interrupted]"));
+    // Partial reasoning is archived as metadata, not replayed as a signed thinking block.
+    if !thinking.is_empty() {
+        message.metadata = Some(MessageMetadata { provider_data: serde_json::json!({"interrupted_reasoning": thinking}), ..Default::default() });
+    }
+    agent.messages.lock().push(message);
+    agent.persist_context().await
 }
 
 /// Run the agent without streaming (blocking until complete).
@@ -97,6 +108,16 @@ pub async fn run_agent(agent: &Agent, prompt: &str) -> Result<AgentOutput> {
 
 /// Core agentic loop with streaming events.
 pub async fn run_agent_streaming(
+    agent: &Agent, prompt: &str, event_tx: mpsc::Sender<AgentEvent>, control_rx: mpsc::Receiver<AgentControl>,
+) -> Result<AgentOutput> {
+    let result = run_agent_streaming_inner(agent, prompt, event_tx, control_rx).await;
+    agent.repair_interrupted_tools();
+    // Also checkpoint errors/cancellation; a normal stop is not required for saving.
+    agent.persist_context().await?;
+    result
+}
+
+async fn run_agent_streaming_inner(
     agent: &Agent,
     prompt: &str,
     event_tx: mpsc::Sender<AgentEvent>,
@@ -104,7 +125,7 @@ pub async fn run_agent_streaming(
 ) -> Result<AgentOutput> {
     // Load session history
     if let (Some(memory), Some(session_id)) = (&agent.memory, &agent.session_id) {
-        let history = memory.load(session_id).await?;
+        let history = if agent.messages.lock().is_empty() { memory.load(session_id).await? } else { Vec::new() };
         if !history.is_empty() {
             let count = history.len();
             agent.messages.lock().extend(history);
@@ -121,18 +142,15 @@ pub async fn run_agent_streaming(
         }
     }
 
-    // Add user prompt
+    agent.repair_interrupted_tools();
+    // Save the user prompt before any network request can be interrupted.
     agent.messages.lock().push(Message::user(prompt));
+    agent.persist_context().await?;
 
     let mut tool_calls: Vec<ToolCallRecord> = Vec::new();
     let mut turn: u32 = 0;
     let mut last_stop_reason = StopReason::EndTurn;
     let mut _last_usage = Usage::default();
-    // Prompt size the provider reported for the previous turn, and the
-    // circuit breaker that stops retrying compaction that keeps failing.
-    let mut last_input_tokens: u64 = 0;
-    let mut compact_state = crate::compact::AutoCompactState::default();
-
     // Build tool context
     let tool_ctx = ToolContext {
         working_dir: agent.working_dir.clone(),
@@ -161,66 +179,47 @@ pub async fn run_agent_streaming(
         let _ = event_tx.send(AgentEvent::TurnStart { turn }).await;
         agent.emit(AgentEvent::TurnStart { turn });
 
-        // Compact before building the request, while there is still room to
-        // send one. `last_input_tokens` is the provider's own count for the
-        // previous turn — the conversation has only grown since, so it is the
-        // best estimate available; before the first turn there is nothing to
-        // compact anyway.
-        if agent.auto_compact && last_input_tokens > 0 {
-            let current = agent.messages.lock().clone();
-            let before = current.len();
-            let model = agent.model.clone().unwrap_or_default();
-            let compacted = tokio::select! {
-                biased;
-                _ = agent.cancel_token.cancelled() => return Err(CerseiError::Cancelled),
-                result = crate::compact::auto_compact_if_needed(
-                    agent.provider.as_ref(), &current, &model, last_input_tokens,
-                    agent.context_window, &mut compact_state,
-                ) => result,
-            };
-            if let Some(result) = compacted {
-                let _ = event_tx
-                    .send(AgentEvent::CompactStart {
-                        reason: crate::events::CompactReason::ThresholdExceeded,
-                        messages_before: before,
-                    })
-                    .await;
-                *agent.messages.lock() = result.messages;
-                let _ = event_tx
-                    .send(AgentEvent::CompactEnd {
-                        messages_after: result.messages_after,
-                        tokens_freed: result.tokens_freed_estimate,
-                    })
-                    .await;
-                // The prompt shrank; the old count no longer describes it.
-                last_input_tokens = 0;
+        let tool_defs: Vec<ToolDefinition> = agent.tools.iter().map(|t| t.to_definition()).collect();
+        let input_budget = agent.context_window.saturating_sub(u64::from(agent.max_tokens) + 1024);
+        if input_budget == 0 { return Err(CerseiError::Config("max_tokens plus framing reserve fills the context window; reduce max_tokens or set the actual context_window".into())); }
+        let trigger = (input_budget as f64 * agent.compact_threshold) as u64;
+        let disabled = agent.context_state.lock().compact.disabled;
+        let current = agent.messages();
+        if agent.auto_compact && !disabled && agent.context_estimate() >= trigger
+            && crate::compact::split_for_compaction(&current, crate::compact::KEEP_RECENT_MESSAGES).is_some() {
+            let _ = event_tx.send(AgentEvent::CompactStart {
+                reason: crate::events::CompactReason::ThresholdExceeded, messages_before: current.len(),
+            }).await;
+            match agent.compact_history(crate::compact::KEEP_RECENT_MESSAGES, None).await {
+                Ok(result) if !result.messages.is_empty() => {
+                    let _ = event_tx.send(AgentEvent::CompactEnd { messages_after: result.messages_after,
+                        tokens_freed: result.tokens_freed_estimate }).await;
+                }
+                Ok(_) => {
+                    agent.context_state.lock().compact.on_failure();
+                    let _ = event_tx.send(AgentEvent::Status("Compaction did not reduce context; history retained.".into())).await;
+                }
+                Err(CerseiError::Cancelled) => return Err(CerseiError::Cancelled),
+                Err(error) => {
+                    agent.context_state.lock().compact.on_failure();
+                    let paused = if agent.auto_compaction_paused() { " Auto-compaction paused after three failures; use /compact to retry." } else { "" };
+                    let _ = event_tx.send(AgentEvent::Status(format!("Auto-compaction failed; history retained: {error}.{paused}"))).await;
+                }
             }
         }
 
         // Build completion request
         let mut messages = agent.messages.lock().clone();
-        let tool_defs: Vec<ToolDefinition> = agent.tools.iter().map(|t| t.to_definition()).collect();
-
         apply_tool_result_budget(&mut messages, agent.tool_result_budget);
-        fit_request(&mut messages, &tool_defs, agent.system_prompt.as_deref(), agent.context_window, agent.max_tokens)?;
+        fit_request_measured(&mut messages, &tool_defs, agent.system_prompt.as_deref(), agent.context_window, agent.max_tokens, &agent.context_state.lock())?;
 
         let model = agent
             .model
             .clone()
             .unwrap_or_else(|| "claude-sonnet-4-6".to_string());
 
-        let mut options = ProviderOptions::default();
-        if let Some(value) = agent.top_p { options.set("top_p", value); }
-        if let Some(value) = agent.min_p { options.set("min_p", value); }
-        if let Some(effort) = &agent.reasoning_effort {
-            options.set("reasoning_effort", effort);
-        }
-        if let Some(budget) = agent.thinking_budget {
-            options.set("thinking_budget", budget);
-        }
-        if let Some(on) = agent.thinking_enabled {
-            options.set("thinking", on);
-        }
+        let options = agent.generation_options();
+        let request_bytes = input_size(&messages, &tool_defs, agent.system_prompt.as_deref());
 
         let request = CompletionRequest {
             model: model.clone(),
@@ -257,28 +256,41 @@ pub async fn run_agent_streaming(
             })
             .await;
 
+        // Retain streamed text if generation is interrupted before a complete message.
+        let mut partial_text = String::new();
+        let mut partial_thinking = String::new();
+        let mut response_finished = false;
         // Process stream events
         loop {
             let event = tokio::select! {
                 biased;
-                _ = agent.cancel_token.cancelled() => return Err(CerseiError::Cancelled),
+                _ = agent.cancel_token.cancelled() => {
+                    save_interrupted_response(agent, &partial_text, &partial_thinking).await?;
+                    return Err(CerseiError::Cancelled);
+                },
                 event = rx.recv() => match event {
                     Some(event) => event,
                     None => break,
                 },
             };
+            if matches!(&event, StreamEvent::MessageStop | StreamEvent::MessageDelta { stop_reason: Some(_), .. }) {
+                response_finished = true;
+            }
             match &event {
                 StreamEvent::TextDelta { text, .. } => {
+                    partial_text.push_str(text);
                     let _ = event_tx.send(AgentEvent::TextDelta(text.clone())).await;
                     agent.emit(AgentEvent::TextDelta(text.clone()));
                 }
                 StreamEvent::ThinkingDelta { thinking, .. } => {
+                    partial_thinking.push_str(thinking);
                     let _ = event_tx
                         .send(AgentEvent::ThinkingDelta(thinking.clone()))
                         .await;
                     agent.emit(AgentEvent::ThinkingDelta(thinking.clone()));
                 }
                 StreamEvent::Error { message } => {
+                    save_interrupted_response(agent, &partial_text, &partial_thinking).await?;
                     return Err(CerseiError::Provider(message.clone()));
                 }
                 _ => {}
@@ -286,12 +298,17 @@ pub async fn run_agent_streaming(
             accumulator.process_event(event);
         }
 
+        if !response_finished {
+            save_interrupted_response(agent, &partial_text, &partial_thinking).await?;
+            return Err(CerseiError::Provider("Response stream ended before completion; available partial text saved".into()));
+        }
+
         // Convert accumulated response
         let response = accumulator.into_response()?;
         last_stop_reason = response.stop_reason.clone();
         _last_usage = response.usage.clone();
 
-        last_input_tokens = response.usage.input_tokens;
+        agent.context_state.lock().observe(response.usage.input_tokens, request_bytes);
 
         // Update cumulative usage
         agent.cumulative_usage.lock().merge(&response.usage);
@@ -316,6 +333,7 @@ pub async fn run_agent_streaming(
 
         // Add assistant message to history
         agent.messages.lock().push(response.message.clone());
+        agent.persist_context().await?;
 
         // Fire PostModelTurn hooks
         let hook_ctx = HookContext {
@@ -364,7 +382,6 @@ pub async fn run_agent_streaming(
                     })
                     .collect();
 
-                let mut result_blocks: Vec<ContentBlock> = Vec::new();
 
                 for (tool_id, tool_name, tool_input) in tool_use_blocks {
                     if agent.cancel_token.is_cancelled() {
@@ -455,6 +472,13 @@ pub async fn run_agent_streaming(
                     result.content = cersei_tools::output::excerpt(&result.content, cersei_tools::output::MODEL_OUTPUT_BYTES);
                     let duration = start.elapsed();
 
+                    agent.messages.lock().push(Message::user_blocks(vec![ContentBlock::ToolResult {
+                        tool_use_id: tool_id.clone(),
+                        content: ToolResultContent::Text(result.content.clone()),
+                        is_error: Some(result.is_error),
+                    }]));
+                    agent.persist_context().await?;
+
                     let _ = event_tx
                         .send(AgentEvent::ToolEnd {
                             name: tool_name.clone(),
@@ -483,18 +507,9 @@ pub async fn run_agent_streaming(
                         duration,
                     });
 
-                    result_blocks.push(ContentBlock::ToolResult {
-                        tool_use_id: tool_id,
-                        content: ToolResultContent::Text(result.content),
-                        is_error: Some(result.is_error),
-                    });
+
                 }
 
-                // Add tool results as user message
-                agent
-                    .messages
-                    .lock()
-                    .push(Message::user_blocks(result_blocks));
             }
             StopReason::MaxTokens => {
                 // Inject continuation message
@@ -510,7 +525,7 @@ pub async fn run_agent_streaming(
     // Persist session
     if let (Some(memory), Some(session_id)) = (&agent.memory, &agent.session_id) {
         let messages = agent.messages.lock().clone();
-        memory.store(session_id, &messages).await?;
+        memory.checkpoint(session_id, &messages, &agent.usage()).await?;
         let _ = event_tx
             .send(AgentEvent::SessionSaved {
                 session_id: session_id.clone(),

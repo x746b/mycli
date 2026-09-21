@@ -1,4 +1,4 @@
-# Skills in MyCLI 1.9.7
+# Skills in MyCLI
 
 ## Using skills
 

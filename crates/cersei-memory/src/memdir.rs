@@ -232,7 +232,9 @@ pub fn load_memory_index(memory_dir: &Path) -> Option<MemoryIndex> {
         let mut result: String = lines[..MAX_INDEX_LINES.min(total_lines)]
             .join("\n");
         if result.len() > MAX_INDEX_BYTES {
-            result.truncate(MAX_INDEX_BYTES);
+            let mut end = MAX_INDEX_BYTES;
+            while !result.is_char_boundary(end) { end -= 1; }
+            result.truncate(end);
         }
         result.push_str(&format!(
             "\n\n<!-- MEMORY.md truncated: {} total lines, showing {} -->",
@@ -336,6 +338,17 @@ mod tests {
 
     fn create_memory_file(dir: &Path, name: &str, content: &str) {
         std::fs::write(dir.join(name), content).unwrap();
+    }
+
+    #[test]
+    fn memory_index_truncation_is_utf8_safe() {
+        let root = tempfile::tempdir().unwrap();
+        let text = format!("{}{}", "x".repeat((MAX_INDEX_BYTES + 1) % 3), "€".repeat(MAX_INDEX_BYTES));
+        assert!(!text.is_char_boundary(MAX_INDEX_BYTES));
+        std::fs::write(root.path().join("MEMORY.md"), text).unwrap();
+        let loaded = load_memory_index(root.path()).unwrap();
+        assert!(loaded.truncated);
+        assert!(loaded.content.contains("MEMORY.md truncated"));
     }
 
     #[test]

@@ -752,7 +752,11 @@ pub fn history_read_path() -> PathBuf {
 // ─── Loading ──────────────────────────────────────────────────────────────
 
 pub fn load() -> Config {
-    let mut config = Config::default();
+    load_for_dir(&std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+}
+
+pub fn load_for_dir(directory: &Path) -> Config {
+    let mut config = Config { working_dir: directory.to_path_buf(), ..Config::default() };
 
     // Layer 2: global
     if let Some(loaded) = load_toml(&global_config_path()) {
@@ -760,7 +764,7 @@ pub fn load() -> Config {
     }
 
     // Layer 3: project
-    if let Some(loaded) = load_toml(&project_file(&std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")), "config.toml")) {
+    if let Some(loaded) = load_toml(&project_file(directory, "config.toml")) {
         merge(&mut config, loaded);
     }
 

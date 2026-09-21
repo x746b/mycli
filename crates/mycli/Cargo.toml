@@ -1,6 +1,6 @@
 [package]
 name = "mycli"
-version = "1.9.7"
+version = "1.9.8"
 edition = "2021"
 license = "MIT"
 description = "Lightweight AI coding CLI — local-first (oMLX), cloud-ready (Kimi, DeepSeek)"
@@ -55,6 +55,5 @@ anyhow = { workspace = true }
 parking_lot = { workspace = true }
 async-trait = { workspace = true }
 ctrlc = "3"
-
-[dev-dependencies]
+fs2 = "0.4"
 tempfile = { workspace = true }
