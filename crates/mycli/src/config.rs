@@ -2,8 +2,8 @@
 //!
 //! Priority (lowest -> highest):
 //! 1. Hardcoded defaults (oMLX local)
-//! 2. ~/.mycli/config.toml  (user global)
-//! 3. .mycli/config.toml    (project local)
+//! 2. ~/.config/mycli/config.toml  (user global)
+//! 3. .config/mycli/config.toml    (project local)
 //! 4. Environment variables  (MYCLI_MODEL, etc.)
 //! 5. CLI flags
 //!
@@ -76,6 +76,8 @@ pub struct LocalProfile {
     pub max_turns: Option<u32>,
     pub context_window: Option<u64>,
     pub reasoning_effort: Option<String>,
+    /// Supported effort identifiers; omitted uses the built-in model catalog, [] disables levels.
+    pub reasoning_levels: Option<Vec<String>>,
     pub temperature: Option<f32>,
     pub top_p: Option<f32>,
     pub min_p: Option<f32>,
@@ -221,7 +223,7 @@ pub struct Config {
     /// Whether this local server offers the oMLX web-search extension.
     #[serde(default = "default_true")]
     pub web_search: bool,
-    /// Active persona: "code", "redteam", "blueteam", "data"
+    /// Active persona name from system-prompts.toml.
     #[serde(default = "default_persona")]
     pub persona: String,
     /// Stream the model's reasoning to the terminal. Toggle at runtime with
@@ -230,6 +232,8 @@ pub struct Config {
     pub show_thinking: bool,
     /// Reasoning effort for the active model, independent of display visibility.
     pub reasoning_effort: Option<String>,
+    /// Supported efforts for the default local server; named local profiles override independently.
+    pub reasoning_levels: Option<Vec<String>>,
     /// Working directory (not serialized)
     #[serde(skip)]
     pub working_dir: PathBuf,
@@ -268,6 +272,7 @@ impl Default for Config {
             persona: "code".into(),
             show_thinking: true,
             reasoning_effort: None,
+            reasoning_levels: None,
             working_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
         }
     }
@@ -383,12 +388,26 @@ impl Config {
             || self.base_url.contains("localhost")
     }
 
+    pub fn reasoning_levels_override(&self) -> Option<&[String]> {
+        if self.is_local() { self.reasoning_levels.as_deref() } else { None }
+    }
+
+    pub fn reasoning_choices<'a>(&'a self, model: &str) -> Vec<&'a str> {
+        self.reasoning_levels_override().map(|items| items.iter().map(String::as_str).collect())
+            .unwrap_or_else(|| cersei_provider::reasoning::levels(model).to_vec())
+    }
+
+    pub fn validate_reasoning(&self, model: &str, effort: &str) -> cersei_types::Result<()> {
+        cersei_provider::reasoning::validate_with_levels(model, effort, self.reasoning_levels_override())
+    }
+
     /// Reset settings that belong to a model before switching providers.
     pub fn restore_model_defaults(&mut self, defaults: &Config) {
         self.max_tokens = defaults.max_tokens;
         self.max_turns = defaults.max_turns;
         self.context_window = defaults.context_window;
         self.reasoning_effort = defaults.reasoning_effort.clone();
+        self.reasoning_levels = defaults.reasoning_levels.clone();
         self.temperature = defaults.temperature;
         self.top_p = defaults.top_p;
         self.min_p = defaults.min_p;
@@ -401,7 +420,7 @@ impl Config {
 
     pub fn with_local_profile(&self, name: &str, defaults: &Config) -> anyhow::Result<Self> {
         let profile = self.local.get(name).ok_or_else(|| anyhow::anyhow!(
-            "Unknown local profile '{name}'. Add [local.{name}] to ~/.mycli/config.toml"
+            "Unknown local profile '{name}'. Add [local.{name}] to ~/.config/mycli/config.toml"
         ))?;
         if let Some(t) = profile.temperature {
             anyhow::ensure!(t.is_finite() && (0.0..=2.0).contains(&t),
@@ -440,6 +459,10 @@ impl Config {
         next.max_turns = profile.max_turns.unwrap_or(defaults.max_turns);
         next.context_window = profile.context_window.unwrap_or(0);
         next.reasoning_effort = profile.reasoning_effort.clone();
+        next.reasoning_levels = profile.reasoning_levels.clone();
+        if let Some(levels) = &next.reasoning_levels {
+            cersei_provider::reasoning::validate_level_names(levels)?;
+        }
         next.temperature = profile.temperature.or(defaults.temperature);
         next.top_p = profile.top_p.or(defaults.top_p);
         next.min_p = profile.min_p.or(defaults.min_p);
@@ -687,20 +710,40 @@ mod redaction_tests {
 
 // ─── Config directories ──────────────────────────────────────────────────
 
-fn global_config_dir() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".mycli")
+/// Use XDG paths on every platform, including macOS (not Application Support).
+pub fn global_config_dir() -> PathBuf {
+    config_dir_from(std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from), dirs::home_dir())
 }
 
-fn project_config_dir() -> PathBuf {
-    std::env::current_dir()
-        .unwrap_or_else(|_| PathBuf::from("."))
-        .join(".mycli")
+fn config_dir_from(xdg: Option<PathBuf>, home: Option<PathBuf>) -> PathBuf {
+    xdg.filter(|path| path.is_absolute())
+        .unwrap_or_else(|| home.unwrap_or_else(|| PathBuf::from(".")).join(".config"))
+        .join("mycli")
+}
+
+pub fn legacy_config_dir() -> PathBuf {
+    dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")).join(".mycli")
+}
+
+/// An existing preferred file wins even if invalid; do not silently load stale settings.
+fn preferred_or_legacy(preferred: PathBuf, legacy: PathBuf) -> PathBuf {
+    if preferred.exists() { preferred } else { legacy }
+}
+
+pub fn global_config_path() -> PathBuf {
+    preferred_or_legacy(global_config_dir().join("config.toml"), legacy_config_dir().join("config.toml"))
+}
+
+pub fn project_file(root: &Path, name: &str) -> PathBuf {
+    preferred_or_legacy(root.join(".config/mycli").join(name), root.join(".mycli").join(name))
 }
 
 pub fn history_path() -> PathBuf {
     global_config_dir().join("history")
+}
+
+pub fn history_read_path() -> PathBuf {
+    preferred_or_legacy(history_path(), legacy_config_dir().join("history"))
 }
 
 // ─── Loading ──────────────────────────────────────────────────────────────
@@ -709,12 +752,12 @@ pub fn load() -> Config {
     let mut config = Config::default();
 
     // Layer 2: global
-    if let Some(loaded) = load_toml(&global_config_dir().join("config.toml")) {
+    if let Some(loaded) = load_toml(&global_config_path()) {
         merge(&mut config, loaded);
     }
 
     // Layer 3: project
-    if let Some(loaded) = load_toml(&project_config_dir().join("config.toml")) {
+    if let Some(loaded) = load_toml(&project_file(&std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")), "config.toml")) {
         merge(&mut config, loaded);
     }
 
@@ -764,6 +807,9 @@ fn merge(base: &mut Config, overlay: Config) {
     }
     if overlay.cost_limit != defaults.cost_limit {
         base.cost_limit = overlay.cost_limit;
+    }
+    if overlay.reasoning_levels.is_some() {
+        base.reasoning_levels = overlay.reasoning_levels;
     }
     if overlay.reasoning_effort.is_some() {
         base.reasoning_effort = overlay.reasoning_effort;
@@ -855,6 +901,7 @@ pub fn apply_cli_overrides(cli: &Cli, config: &mut Config) -> anyhow::Result<()>
             // cloud one — put a cloud model's window in its own profile.
             config.context_window = resolved.context_window.unwrap_or(0);
             config.reasoning_effort = resolved.reasoning_effort;
+            config.reasoning_levels = None;
         } else {
             eprintln!(
                 "Warning: unknown cloud profile '{}'. Available: {}",
@@ -1172,5 +1219,86 @@ http_headers = { Authorization = "Bearer secret" }
         entry.bearer_token_env_var = Some("MYCLI_MISSING_TEST_TOKEN_987".into());
         assert!(entry.config_error().is_some());
         assert!(entry.server_config().is_err());
+    }
+}
+
+#[cfg(test)]
+mod config_path_tests {
+    use super::*;
+
+    #[test]
+    fn xdg_is_portable_and_requires_absolute_path() {
+        let home = PathBuf::from("/home/test");
+        assert_eq!(config_dir_from(None, Some(home.clone())), home.join(".config/mycli"));
+        assert_eq!(config_dir_from(Some("/custom".into()), Some(home.clone())), PathBuf::from("/custom/mycli"));
+        assert_eq!(config_dir_from(Some("relative".into()), Some(home.clone())), home.join(".config/mycli"));
+        assert_eq!(config_dir_from(Some("".into()), Some(home.clone())), home.join(".config/mycli"));
+    }
+
+    #[test]
+    fn preferred_project_files_win_without_merging_legacy_settings() {
+        let root = tempfile::tempdir().unwrap();
+        let old = root.path().join(".mycli");
+        let new = root.path().join(".config/mycli");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::create_dir_all(&new).unwrap();
+        std::fs::write(old.join("config.toml"), "model='legacy'").unwrap();
+        assert_eq!(project_file(root.path(), "config.toml"), old.join("config.toml"));
+        std::fs::write(new.join("config.toml"), "model='new'").unwrap();
+        assert_eq!(project_file(root.path(), "config.toml"), new.join("config.toml"));
+        assert_eq!(load_toml(&project_file(root.path(), "config.toml")).unwrap().model, "new");
+        std::fs::write(old.join("instructions.md"), "legacy instructions").unwrap();
+        assert_eq!(project_file(root.path(), "instructions.md"), old.join("instructions.md"));
+        std::fs::write(new.join("instructions.md"), "new instructions").unwrap();
+        assert_eq!(project_file(root.path(), "instructions.md"), new.join("instructions.md"));
+    }
+}
+
+#[cfg(test)]
+mod local_reasoning_tests {
+    use super::*;
+
+    #[test]
+    fn named_profiles_replace_default_server_levels_without_leaking() {
+        let config: Config = toml::from_str(r#"
+reasoning_levels = ["fast", "thorough"]
+[local.custom]
+model = "custom-model"
+reasoning_levels = ["brief", "deep"]
+reasoning_effort = "deep"
+[local.builtin]
+model = "Qwen-Cold-Fusion"
+[local.disabled]
+model = "Qwen-Cold-Fusion"
+reasoning_levels = []
+"#).unwrap();
+        assert_eq!(config.reasoning_choices("unknown"), ["fast", "thorough"]);
+        let custom = config.with_local_profile("custom", &config).unwrap();
+        assert_eq!(custom.reasoning_choices("custom-model"), ["brief", "deep"]);
+        assert!(custom.validate_reasoning("custom-model", "deep").is_ok());
+        assert!(custom.validate_reasoning("custom-model", "high").is_err());
+        let builtin = custom.with_local_profile("builtin", &config).unwrap();
+        assert_eq!(builtin.reasoning_choices("Qwen-Cold-Fusion"), ["low", "medium", "xhigh", "einstein", "spoon"]);
+        assert_eq!(builtin.reasoning_effort, None);
+        let disabled = builtin.with_local_profile("disabled", &config).unwrap();
+        assert!(disabled.reasoning_choices("Qwen-Cold-Fusion").is_empty());
+        assert!(disabled.validate_reasoning("Qwen-Cold-Fusion", "spoon").is_err());
+        let mut cloud = custom;
+        cloud.provider = "deepseek".into();
+        cloud.base_url = "https://api.deepseek.com/v1".into();
+        assert_eq!(cloud.reasoning_choices("deepseek-flash"), ["none", "low", "high", "max"]);
+    }
+
+    #[test]
+    fn config_merge_can_disable_levels_and_cloud_selection_clears_local_override() {
+        let mut config = Config::default();
+        merge(&mut config, toml::from_str("reasoning_levels=['fast']").unwrap());
+        assert_eq!(config.reasoning_choices("unknown"), ["fast"]);
+        merge(&mut config, toml::from_str("reasoning_levels=[]").unwrap());
+        assert!(config.reasoning_choices("Qwen-Cold-Fusion").is_empty());
+        use clap::Parser;
+        let cli = crate::Cli::parse_from(["mycli", "--cloud", "deepseek"]);
+        apply_cli_overrides(&cli, &mut config).unwrap();
+        assert!(config.reasoning_levels.is_none());
     }
 }

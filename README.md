@@ -2,6 +2,12 @@
 
 Lightweight AI coding CLI for testing LLM capabilities — especially local models running on [oMLX](https://github.com/jundot/omlx). Switch between local and cloud models (Kimi, DeepSeek, Gemini, OpenAI), connect MCP tools over stdio or HTTP, and inspect highlighted code and full tool output directly in the terminal.
 
+**1.9.6:** System prompts and personas are editable in `system-prompts.toml`, with
+an empty Neutral persona and `/prompts path|reload`. Configuration now uses
+`~/.config/mycli` (`XDG_CONFIG_HOME` supported), with legacy `.mycli` fallback.
+Tier style can be suppressed per persona or model. Local `/reasoning` now supports
+Cold-Fusion modes and configurable profile levels; `deepseek-flash` is recognized.
+
 **1.9.5:** Ctrl+C and Esc now close the active inference request, including
 during silent reasoning, initial response waits, and context compaction.
 oMLX and DS4 can then cancel server-side generation. Enter a correction at the
@@ -17,7 +23,7 @@ $ mycli
  | | | | | | |_| | |____| |____| |
  |_| |_| |_|\__, |\_____|______|_|
              __/ |
-            |___/           v1.9.5
+            |___/           v1.9.6
 
   tools [medium]: Read, Write, Bash, Edit, Glob, Grep, WebSearch
   omlx · Qwen3.8-27B · tools:medium · max_turns:30 · /opt/mycli
@@ -81,7 +87,7 @@ mycli -t simple -m RedSage-Qwen3-8B-DPO
 mycli -p redteam -t full -m orcarouter_Qwen3.8-27B-Uncensored-8B "cybersec prompt"    
 ```
 
-**Native binary** | **Rust** | **32 tools** | **3 tool tiers** | **6 personas** | **MCP support** | **Cybersecurity benchmarks** | **Hot-swappable models & providers**
+**Native binary** | **Rust** | **32 tools** | **3 tool tiers** | **Editable personas** | **MCP support** | **Cybersecurity benchmarks** | **Hot-swappable models & providers**
 
 ---
 
@@ -109,7 +115,10 @@ Requires Rust 1.85+, OpenSSL dev libraries (`libssl-dev` / `openssl-devel`).
 
 ## Configuration
 
-Config lives in `~/.mycli/config.toml` (global) and `.mycli/config.toml` (project-level).
+Config lives in `~/.config/mycli/config.toml` (global) and `.config/mycli/config.toml` (project-level).
+`XDG_CONFIG_HOME` overrides `~/.config` on Linux and macOS. Each file falls back to
+its legacy `~/.mycli/` or project `.mycli/` location only when the new file is absent.
+History is saved in the new global directory, with legacy history read on first use.
 
 ```toml
 # ─── Local (oMLX) ──────────────────────────────────────────
@@ -118,7 +127,7 @@ api_key = "your-omlx-key"
 # model = "mlx-community_Qwen3.8-27B-mxfp8"   # empty/unset = auto-detect first loaded
 
 # ─── Persona & tool tier ───────────────────────────────────
-# persona = "code"         # code, redteam, blueteam, data, math, agentic
+# persona = "code"         # any persona in system-prompts.toml, including neutral
 # tool_tier = "auto"       # auto = medium for local, full for cloud
 # cost_limit = 1.0         # stop agent after $1 cloud spend (0 = unlimited)
 # show_thinking = false    # start with reasoning off (see Reasoning)
@@ -267,9 +276,9 @@ mycli --cloud deepseek -y "refactor main.rs"   # auto-approve tools
 | `-m, --model` | Model name (oMLX model ID or cloud model) |
 | `--cloud <name>` | Use cloud provider (kimi, deepseek, gemini, openai, or config profile) |
 | `--local <name>` | Load a named `[local.<name>]` profile |
-| `--reasoning <level>` | Cloud reasoning effort; `default` uses the model default |
+| `--reasoning <level>` | Model reasoning effort; `default` uses the server default |
 | `-t, --tools <tier>` | Tool tier: `simple`, `medium`, `full`, or `auto` (default) |
-| `-p, --persona <name>` | Persona: `code` (default), `redteam`, `blueteam`, `data`, `math`, `agentic` |
+| `-p, --persona <name>` | Persona from `system-prompts.toml`; `code` by default, `neutral` for empty persona text |
 | `-y, --yes` | Auto-approve all tool permissions |
 | `--no-thinking` | Start with reasoning off — at the model level where the server supports it |
 | `--max-turns` | Max agent turns per prompt (default: 30) |
@@ -292,7 +301,9 @@ mycli --cloud deepseek -y "refactor main.rs"   # auto-approve tools
 | `/reasoning [level]` | Pick or set reasoning effort without resetting the conversation; `default` resets the override |
 | `/tools` | Interactive tool tier picker |
 | `/tools <tier>` | Switch tier (`simple` / `medium` / `full`) |
-| `/persona` | Interactive persona picker |
+| `/persona [name]` | Pick or switch to any configured persona |
+| `/prompts path` | Show active prompt source and preferred file |
+| `/prompts reload` | Reload prompt catalog and reset conversation |
 | `/usage` | Show cloud balances / spend (Kimi, DeepSeek, OpenAI) |
 | `/mcp` | Show each MCP server's status — tools discovered, or why it failed |
 | `/mcp verbose` | List every discovered MCP tool, grouped by server |
@@ -324,6 +335,28 @@ Supported effort choices follow the [OpenAI model documentation](https://develop
 [DeepSeek thinking controls](https://api-docs.deepseek.com/guides/thinking_mode/),
 [Kimi K3 model usage](https://github.com/MoonshotAI/Kimi-K3#6-model-usage), and
 [Gemini compatibility documentation](https://ai.google.dev/gemini-api/docs/openai#thinking).
+
+### Local reasoning levels
+
+Cold-Fusion supports `/reasoning low|medium|xhigh|einstein|spoon` out of the box.
+To declare or override levels, add a profile in `~/.config/mycli/config.toml`:
+
+```toml
+[local.coldfusion]
+model = "your-exact-Cold-Fusion-model-id"
+reasoning_levels = ["low", "medium", "xhigh", "einstein", "spoon"]
+reasoning_effort = "default"
+```
+
+Use `/local coldfusion`, then `/reasoning` to pick or `/reasoning spoon` to select.
+**`/local` loads profile settings; `/model` selects a model directly.**
+`/reasoning default` restores the server default. Omit `reasoning_levels` to use
+built-in choices, or set `[]` to disable explicit effort levels.
+
+Only declare levels supported by the backend/template. Standard Qwen3.6 and Gemma4
+templates expose thinking on/off instead; use `/thinking on` or `/thinking off`.
+See [profile examples](config.example.toml). Existing `{REASON:...}` tags may override
+request settings, so compare controls in a fresh conversation.
 
 ### Keyboard shortcuts
 
@@ -383,8 +416,35 @@ The system prompt adapts to the tier — small models only see descriptions of t
 | **data** | Data processing — parse, transform, analyze any format |
 | **math** | Mathematics and cryptography — number theory, modular arithmetic, RSA/ECC/AES |
 | **agentic** | Strict instruction following — tool use, structured output, format adherence |
+| **neutral** | Empty persona text, no house style; tool guidance and runtime context remain |
 
-Switch with `/persona`, `-p`, or `persona = "redteam"` in config.
+Switch with `/persona`, `-p`, or `persona = "code"` in config. Names are case-insensitive.
+
+Prompts are loaded from `$MYCLI_PROMPTS`, then `~/.config/mycli/system-prompts.toml`
+(or `$XDG_CONFIG_HOME/mycli/system-prompts.toml`), then legacy
+`~/.mycli/system-prompts.toml`, then embedded defaults. An explicit path is authoritative;
+a missing or invalid explicit file warns and uses embedded defaults at startup.
+Invalid reloads leave the active catalog and conversation unchanged.
+
+Copy the bundled `system-prompts.toml` into the global config directory to edit it.
+Add or delete `[personas.<name>]` tables, then run `/prompts reload`; the picker updates
+without recompiling. The external catalog replaces all default personas. `neutral` is
+always available and must have `prompt = ""`. An unknown or removed active persona
+falls back to `code`, or `neutral` when `code` is absent.
+
+Each persona has a `prompt` and optional `description`. Tier `guidelines` and `style`
+are editable; omitted tiers inherit embedded defaults. Tool registration remains in
+code, so prompt edits do not grant tools. Neutral always suppresses tier style;
+`[style].suppress_for_personas` adds other names, and `suppress_for_models` accepts
+case-insensitive globs matched against the resolved model ID. The bundled catalog
+suppresses style for `*cold-fusion*`. An external catalog's omitted `[style]` has no
+additional suppression rules. Environment, memory, project instructions, and optional
+WebSearch guidance still form part of the system prompt.
+
+Successful reload resets conversation, just like switching personas. Failed parsing
+or agent rebuilding keeps the previous active prompts. Existing persona wording is
+preserved; see [the modernization proposal](docs/persona-modernization.md) for an
+optional replacement catalog and evaluation plan.
 
 ### Reasoning
 
@@ -821,12 +881,14 @@ cd bench
 Prompts, personas, tool tiers, timeouts, rubrics, refusal markers, and suite
 composition live in external TOML files under `bench/prompts/`; adding or
 changing tests does not require modifying Python or Rust code. Model exclusions
-and Codex-grader defaults live in `bench/config.toml`.
+and Codex-grader defaults live in `bench/config.toml`. User overrides can be placed
+in `~/.config/mycli/bench.toml` (`XDG_CONFIG_HOME` supported); this replaces the bundled
+benchmark config. Legacy `~/.mycli/bench.toml` is a fallback.
 
 ### Structured grading
 
 `/grade` reads the API-backed profiles already configured under
-`[cloud.<provider>]` in `~/.mycli/config.toml`. The special `codex` provider
+`[cloud.<provider>]` in `~/.config/mycli/config.toml`. The special `codex` provider
 instead runs `codex exec --ephemeral` using a ChatGPT login, so it does not need
 an OpenAI API key. API-key environment variables are removed from the grader
 subprocess to prevent an accidental switch to metered API authentication.
@@ -881,7 +943,7 @@ option, prompt format, configuration override, and generated file.
 
 ## Architecture
 
-MyCLI is built on the [Cersei SDK](https://github.com/pacifio/cersei) — a modular Rust SDK for building coding agents, vendored into this repo.
+MyCLI is built on the [Cersei SDK](https://github.com/pacifio/cersei) — a modular Rust SDK for building coding agents, vendored into this repo. See [Cersei compatibility notes](docs/cersei-compatibility.md) before upgrading the SDK.
 
 ```
 mycli (CLI binary)

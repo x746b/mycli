@@ -1,3 +1,5 @@
+# Global: ~/.config/mycli/config.toml ($XDG_CONFIG_HOME supported)
+# Project: .config/mycli/config.toml; legacy .mycli paths remain readable.
 # ─── Local (oMLX) ──────────────────────────────────────────
 # API key for your oMLX server (http://127.0.0.1:8000)
 api_key = "omlx-xxxxxxxxxxxxxxxxxxxx"
@@ -8,7 +10,7 @@ api_key = "omlx-xxxxxxxxxxxxxxxxxxxx"
 # max_turns = 30
 # max_tokens = 16384
 # tool_tier = "auto"      # auto | simple | medium | full
-# persona = "code"        # code | redteam | blueteam | data
+# persona = "code"        # any persona in system-prompts.toml; neutral is empty
 # cost_limit = 0.0        # USD per session, 0 = unlimited
 # context_window = 0      # tokens; 0 = ask the server, else guess from the model name
 # show_thinking = true    # stream model reasoning; Ctrl+O toggles at runtime
@@ -30,6 +32,9 @@ api_key = "omlx-xxxxxxxxxxxxxxxxxxxx"
 # max_tokens/max_turns/temperature/top_p/min_p/thinking/tool_tier/persona/show_thinking inherit
 # top-level defaults when omitted. context_window defaults to auto-detection;
 # reasoning_effort defaults to the server's choice, not the previous profile.
+# reasoning_levels = ["low", "high"] # optional: use only backend-supported values
+# Omitted levels use built-in model knowledge; [] disables levels. Named profiles
+# do not inherit top-level reasoning_levels. /reasoning default clears explicit effort.
 # web_search defaults to false: enable only for oMLX's search extension.
 
 # [local.glm]
@@ -127,3 +132,24 @@ model = "gpt-5.4"
 # bearer_token_env_var = "IDA_MCP_TOKEN"
 # http_headers = { "X-Client" = "mycli" }
 # env_http_headers = { "X-API-Key" = "IDA_API_KEY" }
+
+# Cold-Fusion has built-in low/medium/xhigh/einstein/spoon support:
+# [local.coldfusion]
+# model = "DavidAU_Qwen3.8-27B-TWIN-TURBO-Fable-Cold-Fusion-709-L-Uncensored-oQ8-mtp"
+# reasoning_effort = "spoon"
+# thinking = true
+# web_search = true
+
+# These standard templates expose thinking on/off, not an effort-level scale.
+# Select named profiles with /local, not /model.
+# [local.qwen36]
+# model = "Qwen3.6-35B-A3B-8bit"
+# reasoning_levels = []
+# thinking = true
+# web_search = true
+
+# [local.gemma4]
+# model = "mlx-community_gemma-4-26b-a4b-it-8bit"
+# reasoning_levels = []
+# thinking = true
+# web_search = true

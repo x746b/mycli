@@ -37,9 +37,13 @@ except ImportError:  # Python 3.10 and older
         raise SystemExit("Python 3.11+ or the 'tomli' package is required")
 
 
+from config_paths import user_file
+
 ROOT = Path(__file__).resolve().parent
 PROMPTS = ROOT / "prompts"
-BENCH_CONFIG = ROOT / "config.toml"
+BENCH_CONFIG = user_file("bench.toml")
+if not BENCH_CONFIG.exists():
+    BENCH_CONFIG = ROOT / "config.toml"
 GRADING_SCHEMA = ROOT / "schemas" / "grading.schema.json"
 RESULTS = ROOT / "results"
 ANSI_RE = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]|\x1b\[[0-?]*[ -/]*[@-~]")
@@ -59,7 +63,7 @@ def local_settings() -> tuple[str, str]:
             key = json.loads(settings.read_text())["auth"]["api_key"]
         except (KeyError, ValueError, OSError):
             pass
-    cfg = Path.home() / ".mycli/config.toml"
+    cfg = user_file("config.toml")
     if cfg.exists():
         try:
             data = load_toml(cfg)
@@ -347,7 +351,7 @@ PRESETS = {
 
 
 def cloud_profiles() -> dict[str, dict]:
-    path = Path.home() / ".mycli/config.toml"
+    path = user_file("config.toml")
     data = load_toml(path) if path.exists() else {}
     profiles = {}
     for name, profile in data.get("cloud", {}).items():

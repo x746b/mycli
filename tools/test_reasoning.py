@@ -104,11 +104,11 @@ def main():
         requests = run(server, "gpt-5.6-luna", "none")
         assert requests[0][1]["reasoning"]["effort"] == "none"
         print("PASS: default uses server default, explicit off remains off")
-        for model, effort in [("deepseek-chat", "high"), ("deepseek-chat", "none"), ("kimi-k3", "max"), ("gemini-3.1-pro-preview", "medium")]:
+        for model, effort in [("deepseek-flash", "high"), ("deepseek-flash", "none"), ("deepseek-chat", "high"), ("deepseek-chat", "none"), ("kimi-k3", "max"), ("gemini-3.1-pro-preview", "medium")]:
             requests = run(server, model, effort)
             path, body = requests[0]
             assert path == "/v1/chat/completions"
-            if model == "deepseek-chat":
+            if model.startswith("deepseek"):
                 assert body["thinking"]["type"] == ("disabled" if effort == "none" else "enabled")
             if effort != "none":
                 assert body["reasoning_effort"] == effort

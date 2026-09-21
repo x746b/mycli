@@ -12,6 +12,7 @@ pub struct OpenAi {
     auth: Auth,
     base_url: String,
     default_model: String,
+    reasoning_levels: Option<Vec<String>>,
     client: reqwest::Client,
 }
 
@@ -21,6 +22,7 @@ impl OpenAi {
             auth,
             base_url: OPENAI_API_BASE.to_string(),
             default_model: "gpt-4o".to_string(),
+            reasoning_levels: None,
             client: reqwest::Client::new(),
         }
     }
@@ -255,7 +257,12 @@ impl Provider for OpenAi {
 
         let effort = request.options.get::<String>("reasoning_effort");
         if let Some(effort) = &effort {
-            crate::reasoning::validate(&model, effort)?;
+            let levels = if model == self.default_model {
+                self.reasoning_levels.as_deref()
+            } else {
+                None
+            };
+            crate::reasoning::validate_with_levels(&model, effort, levels)?;
         }
         // Explicit effort must never be silently downgraded to keep tools
         // working. Responses supports both, preserving encrypted reasoning.
@@ -758,6 +765,7 @@ pub struct OpenAiBuilder {
     api_key: Option<String>,
     base_url: Option<String>,
     model: Option<String>,
+    reasoning_levels: Option<Vec<String>>,
 }
 
 impl OpenAiBuilder {
@@ -776,7 +784,16 @@ impl OpenAiBuilder {
         self
     }
 
+    /// Override supported efforts for this builder's model only.
+    pub fn reasoning_levels(mut self, levels: Vec<String>) -> Self {
+        self.reasoning_levels = Some(levels);
+        self
+    }
+
     pub fn build(self) -> Result<OpenAi> {
+        if let Some(levels) = &self.reasoning_levels {
+            crate::reasoning::validate_level_names(levels)?;
+        }
         let auth = if let Some(key) = self.api_key {
             Auth::ApiKey(key)
         } else {
@@ -789,6 +806,7 @@ impl OpenAiBuilder {
             auth,
             base_url: self.base_url.unwrap_or_else(|| OPENAI_API_BASE.to_string()),
             default_model: self.model.unwrap_or_else(|| "gpt-4o".to_string()),
+            reasoning_levels: self.reasoning_levels,
             client: reqwest::Client::new(),
         })
     }

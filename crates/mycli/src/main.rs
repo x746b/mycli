@@ -7,6 +7,7 @@ mod latex;
 mod latex_layout;
 mod markdown;
 mod output_view;
+mod prompts;
 mod render;
 mod repl;
 mod status;
@@ -64,11 +65,11 @@ pub struct Cli {
     #[arg(long)]
     pub no_thinking: bool,
 
-    /// Cloud model reasoning effort (default, none, low, medium, high, ...)
+    /// Model reasoning effort (built-in or configured reasoning_levels; default resets)
     #[arg(long, value_name = "LEVEL")]
     pub reasoning: Option<String>,
 
-    /// Persona: code (default), redteam, blueteam, data
+    /// Persona from system-prompts.toml (default: code; neutral: empty)
     #[arg(long, short = 'p', value_name = "PERSONA")]
     pub persona: Option<String>,
 

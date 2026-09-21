@@ -18,7 +18,7 @@ The .md twin renders natively on GitHub; the .html is the styled version.
 
 Environment:
     OMLX_BASE   default http://127.0.0.1:8000
-    OMLX_KEY    default: read from ~/.omlx/settings.json, then ~/.mycli/config.toml
+    OMLX_KEY    default: read from ~/.omlx/settings.json, then ~/.config/mycli/config.toml (legacy ~/.mycli fallback)
 
 Notes:
   * Sends chat_template_kwargs.reasoning_effort=low. Without it, thinking models
@@ -71,6 +71,9 @@ REASONING_EFFORT = _settings.get("reasoning_effort", "low")
 
 # ------------------------------------------------------------------ probes --
 
+from config_paths import user_file
+
+
 def api_key():
     if os.environ.get("OMLX_KEY"):
         return os.environ["OMLX_KEY"]
@@ -81,7 +84,7 @@ def api_key():
                 return json.load(fh)["auth"]["api_key"]
         except (KeyError, ValueError):
             pass
-    cfg = os.path.expanduser("~/.mycli/config.toml")
+    cfg = user_file("config.toml")
     if os.path.exists(cfg):
         with open(cfg) as fh:
             m = re.search(r'api_key\s*=\s*"([^"]+)"', fh.read())
