@@ -62,6 +62,31 @@ here. Follow [Cersei compatibility guidance](cersei-compatibility.md): evaluate
 small backports separately, preserving MyCLI's provider, cancellation, streaming,
 reasoning, and compaction behavior. Do not make a whole-SDK upgrade a prerequisite.
 
+### Documentation follow-up
+
+The [Cersei documentation](https://cersei.pacifio.dev/docs) provides additional
+components to evaluate before implementation:
+
+- [Background Tasks](https://cersei.pacifio.dev/docs/background-tasks) describes
+  in-memory task tracking without persistence across agent restarts. This supports
+  the need for durable lifecycle management beyond task bookkeeping.
+- [Workflows Overview](https://cersei.pacifio.dev/docs/workflows-overview) documents
+  a separate `cersei-workflows` engine with serializable graphs, parallel branches,
+  and streamed execution events. The page shows version `0.2.1`; this is a
+  documentation reference, not a verified dependency recommendation.
+
+The workflow engine was not covered by the initial source review and is not in
+MyCLI's inspected workspace. Evaluate it before building equivalent pipeline
+features. Explicit pipelines could complement the supervised agent runtime;
+their documented features do not establish support for direct conversations with
+running workers, delivery receipts, durable recovery, or attachable terminal views.
+
+During Phase 0, map each candidate capability to its actual crate, source revision,
+and tests. Record whether to reuse it, backport a focused change, or implement the
+missing behavior locally. Check API compatibility and lifecycle semantics rather
+than treating documentation examples as proof of runtime behavior. Preserve the
+existing compatibility policy and keep workflow-engine adoption optional.
+
 ## Architecture
 
 Use a local supervisor to own execution. Terminal interfaces are clients of that
@@ -213,12 +238,15 @@ evaluated and is not a dependency of this plan.
 ### Phase 0: ownership and lifecycle foundation
 
 - Recheck source findings and existing regression coverage.
+- Evaluate the documented task and workflow components against versioned source
+  and tests; record reuse/backport/build decisions before duplicating features.
 - Fix streaming ownership and establish explicit task handles/cancellation.
 - Specify protocol events, state transitions, and persistence ownership.
 - Use deterministic fake providers for lifecycle tests without inference costs.
 
 Gate: dropping a viewer cannot invalidate a running agent; cancellation works
-during a silent provider request; single-agent behavior remains intact.
+during a silent provider request; single-agent behavior remains intact; the
+component evaluation records supported capabilities and unresolved gaps.
 
 ### Phase 1: observable manual team — first vertical slice
 
