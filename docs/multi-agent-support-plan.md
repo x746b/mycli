@@ -12,8 +12,9 @@ open any worker's conversation, send instructions while it is working, and
 understand whether those instructions were received.
 
 The initial validation workloads are bounded coding, documentation research,
-debugging, and offline artifact analysis. This plan defines general runtime and
-interface capabilities, not autonomous offensive workflows.
+debugging, offline artifact analysis, and explicitly authorized pentesting or
+CTF targets. Pentesting workers must inherit one target scope and shared safety
+policy; spawning another agent must never broaden either.
 
 Example: an orchestrator uses a configured cloud profile while researcher,
 worker, and debugger sessions use configured DeepSeek profiles. Names and model
@@ -31,6 +32,10 @@ identifiers are configuration, not hardcoded assumptions about availability.
 - Closing or reconnecting a viewer does not silently discard a conversation.
 - Parallelism has explicit limits and does not assume local inference capacity.
 - Existing single-agent use remains available without tmux or a supervisor.
+- Crew size follows the evidence: zero workers when recon is inconclusive, one
+  for a dominant path, and a bounded portfolio for distinct promising paths.
+- The user can inspect why each worker was selected, its evidence and budget,
+  and every pause, stop, or reprioritization decision.
 
 Observability means responses, actions, outputs, and explicit progress summaries.
 It does not depend on exposing private model reasoning.
@@ -74,6 +79,10 @@ components to evaluate before implementation:
   a separate `cersei-workflows` engine with serializable graphs, parallel branches,
   and streamed execution events. The page shows version `0.2.1`; this is a
   documentation reference, not a verified dependency recommendation.
+- [PentestAgent](https://github.com/GH05TCREW/pentestagent) exposes crew mode,
+  named child agents, and manual spawn/despawn controls. Treat it as a product
+  and coordination reference; verify its source and interaction semantics before
+  adopting an implementation pattern.
 
 The workflow engine was not covered by the initial source review and is not in
 MyCLI's inspected workspace. Evaluate it before building equivalent pipeline
@@ -204,12 +213,342 @@ Slow viewers must not block workers. Use bounded subscriber queues and replay fr
 durable events after a subscriber falls behind. Keep control requests responsive
 while tokens or large tool outputs are streaming.
 
+## Adaptive pentesting crew orchestration
+
+For authorized pentesting and competitive lab workflows, use a recon-led adaptive
+crew instead of a fixed swarm. More findings should not automatically mean more
+workers. The planner selects a small portfolio of credible, sufficiently independent
+tracks, while preserving the option to run a single fully observable worker.
+
+```text
+scope + safety policy
+          |
+   automated/manual recon
+          |
+ normalized findings + artifacts
+          |
+ candidate tracks and evidence links
+          |
+ score + interference analysis + resource limits
+          |
+ proposed crew plan (user-visible)
+          |
+ 0..N observable workers, normally capped at 4
+          |
+ verified progress / stagnation / success / side effects
+          |
+ pause, stop, continue, or replan
+```
+
+### Recon contract
+
+Recon scripts such as `win_recon.sh` should feed the planner through a versioned
+result contract. Prefer JSON or JSONL emitted alongside the human-readable log.
+When only text exists, an importer may normalize it, but it must retain links to
+the original output and mark parser-derived claims as such.
+
+A finding contains at least:
+
+- target and scope identity;
+- observation type, value, timestamp, and source command/tool;
+- evidence artifact reference and parser confidence;
+- whether collection changed remote state or may be incomplete;
+- correlations such as host, service, account, domain, or application identity.
+
+The orchestrator should not repeatedly rerun expensive or stateful recon because
+another worker cannot see the result. Findings and artifacts are team-readable;
+credentials remain in a scoped secret store and are referenced by opaque handles.
+
+### Candidate tracks and weighted selection
+
+The planner converts findings into explicit candidate tracks. Each track records:
+
+- hypothesis and intended outcome;
+- supporting and contradicting evidence;
+- prerequisites and a concrete verification step;
+- confidence, expected path value, exploitability, estimated time/cost, and
+  overlap with other tracks;
+- affected resources and interference class;
+- initial worker role/profile, tool needs, budget, success proof, and stop rules.
+
+Use normalized scores as decision support, not as false precision. An initial
+configurable ranking can combine evidence confidence, path value, exploitability,
+coverage of a distinct hypothesis, and fit within the available time, then subtract
+cost, uncertainty, safety, and interference penalties. Persist the component scores
+and a short rationale so the user can understand and override the result.
+
+Crew selection is a constrained portfolio decision:
+
+- choose no worker when no track reaches the configured evidence threshold;
+- choose one worker when a track clearly dominates, a detected CVE has strong
+  precondition matches, or shared-state constraints make concurrency unsafe;
+- choose two to four workers when several credible tracks are meaningfully
+  independent and the provider, hardware, scope, and safety budgets allow it;
+- queue lower-value tracks rather than spawning them merely to fill capacity;
+- avoid selecting redundant workers unless their assignments test genuinely
+  different hypotheses or implementations.
+
+The maximum is configurable and must not default upward merely because resources
+are available. The plan shown before spawning includes selected and deferred tracks,
+scores, evidence, conflicts, estimated budgets, and the reason for crew size.
+The user may edit that plan or allow policy-based automatic execution.
+
+### Worker contract and progress
+
+Every worker starts with an immutable assignment envelope containing the authorized
+scope, role, track hypothesis, evidence references, effective permissions, shared
+constraints, resource budget, success proof, stop conditions, and progress cadence.
+Later messages amend the assignment through visible events rather than silently
+rewriting its original objective.
+
+Workers report structured progress at safe points:
+
+- current hypothesis and action;
+- new evidence or contradiction, with artifact references;
+- remaining blocker and next intended action;
+- budget consumed and whether the track is advancing;
+- side effects, acquired resource leases, and requested help.
+
+Progress reports complement the live transcript and tool stream. They do not hide
+the underlying work. The user can enter a worker pane, add information, redirect
+the next step, interrupt the active turn, or pause/stop the track.
+
+### Interference and shared-state controls
+
+Parallel safety depends on affected state, not only on whether tracks have different
+names. Classify intended actions before dispatch:
+
+| Class | Examples | Default policy |
+| --- | --- | --- |
+| Read-only | service/version checks, LDAP queries, SMB listing, certificate enumeration | Parallel within rate limits |
+| Shared authentication | password validation, Kerberos requests, spraying | Shared lockout/rate budget and coordinated scheduling |
+| Stateful | session use, ticket/cache changes, file upload, service or ACL modification | Resource lease; serialize conflicting actions |
+| Disruptive | reset/restart, destructive exploit attempt, broad credential attack | Explicit policy or user authorization |
+
+Represent affected resources with stable keys such as `host:dc01`,
+`account:alice`, `service:dc01/mssql`, and `domain:corp.local`. The supervisor owns
+leases and aggregate rate/attempt budgets. Workers declare resources before a
+state-changing action; the runtime queues or rejects conflicts and explains why.
+
+AD-specific policy should coordinate account lockout thresholds, authentication
+rates, Kerberos ticket/cache ownership, domain-controller affinity, shared sessions,
+and modifications to directory objects or services. Read-only enumeration can
+usually proceed concurrently, while actions with cross-track effects require a
+lease or serialized checkpoint. Unknown side effects raise the interference class.
+
+Tool permissions remain necessary but are insufficient: permission answers whether
+an action may occur, while a lease answers whether it may occur concurrently now.
+
+### Rabbit-hole control and replanning
+
+Each track has an elapsed-time, turn, inference, command, and optional authentication
+budget. Add track-specific limits such as maximum PoC adaptation attempts. A worker
+requests an extension with evidence and a revised estimate; it does not silently
+consume the team's remaining time.
+
+Reconsider a track when it repeats the same failure, exhausts a prerequisite,
+produces no material evidence for a configured interval, discovers unsafe shared
+state, or is dominated by a newly verified path. The orchestrator recommends one
+of `continue`, `narrow`, `pause`, `stop`, or `replace` and exposes the rationale.
+User direction has priority and is delivered to both the worker and orchestrator.
+
+Pause is a first-class state: settle or cancel the active operation, release leases
+that cannot safely be retained, preserve the conversation and artifacts, and make
+the track resumable. Stop additionally ends owned jobs and records any outcome that
+remains unknown. Neither action is represented by changing a bookkeeping field alone.
+
+### Success and stop-on-signal behavior
+
+A worker success is a structured milestone containing the claim, verification
+method, evidence/artifacts, confidence, current access or capability, relevant side
+effects, and required next step. The supervisor distinguishes `candidate`,
+`verified`, and `invalidated`; model prose alone cannot mark a track verified.
+
+On verified success, the orchestrator evaluates other tracks by overlap:
+
+- pause workers pursuing the same objective or modifying the same resources;
+- stop clearly obsolete work after active operations settle;
+- allow independent, useful evidence collection to continue within the team budget;
+- retain workers whose results can validate or safely strengthen the viable path;
+- show the proposed actions and allow the user to message, pause, stop, resume, or
+  override any worker directly.
+
+Pausing is preferable when the successful path may still fail during the next
+stage. If it is later invalidated, the previous crew plan and preserved workers
+support fast resumption rather than reconstructing their state.
+
+### Pentesting orchestration events
+
+Add typed events for `ReconCompleted`, `FindingRecorded`, `TrackProposed`,
+`CrewPlanProposed`, `CrewPlanApplied`, `TrackProgress`, `LeaseRequested`,
+`LeaseGranted`, `LeaseBlocked`, `MilestoneCandidate`, `MilestoneVerified`,
+`TrackPaused`, `TrackResumed`, `TrackStopped`, and `CrewReplanned`. Each event
+links to its evidence, actor, policy decision, and correlation IDs where applicable.
+These events drive both recovery and the overview UI.
+
+### Existing workflows as orchestration policy sources
+
+Use mature single-threaded workflows as domain-policy baselines and add
+parallelism as an orchestration overlay. Do not translate an entire Markdown
+skill into Rust or duplicate its product-specific reasoning in the supervisor.
+
+The inspected `pentest-linux-new` and `pentest-linux-new-paralel` pair demonstrates
+this separation. Both retain the same high-level state machine:
+
+```text
+Prepare -> Acquire -> Triage -> Prove access -> Post-access -> Complete
+                            +
+              observable parallel-routing policy
+                            |
+              1-2 bounded independent workers
+```
+
+The parallel workflow adds reusable policy concepts without replacing the base
+workflow: incremental `recon_events.jsonl` consumption, evidence-ranked live
+leads, concrete next proofs and expected outcomes, attempt/time budgets, an
+independence gate, central ownership of shared shells/listeners/tunnels, scoped
+worker ledgers, structured checkpoints, operator steering, rabbit-hole limits,
+and impact-lock preemption when a path proves useful access.
+
+Treat these assets as battle-shaped policy candidates rather than automatically
+proven runtime behavior. For the inspected Linux parallel workflow, repository
+history shows a recent dedicated implementation and no discovered automated test
+covering its routing decisions. Validate it through recorded solves and deterministic
+replay before using it as the canonical reference implementation.
+
+Keep four layers separate:
+
+| Layer | Responsibility |
+| --- | --- |
+| Domain workflow | Define recon, validation, foothold, escalation, and completion |
+| Orchestration policy | Decide whether, when, and how workflow branches run concurrently |
+| Supervisor runtime | Own sessions, messages, leases, jobs, cancellation, and persistence |
+| TUI/client | Expose evidence, activity, decisions, and direct operator control |
+
+Add optional machine-readable orchestration metadata beside a skill rather than
+requiring the supervisor to interpret every instruction in prose:
+
+```text
+SKILL.md                    Human/model workflow and evidence logic
+orchestration.toml          Events, routing gates, budgets, conflicts, milestones
+references/*.md             Domain-specific policies and operator guidance
+```
+
+The metadata references named workflow events and capabilities; it does not embed
+commands, credentials, or a box solution. Skills without metadata continue to run
+as ordinary single-agent workflows.
+
+The first domain adapter should faithfully reproduce the existing Linux contract
+before generalizing it:
+
+1. Consume incremental recon events and preserve their source artifacts.
+2. Produce normalized lead cards with evidence, next proof, expected outcome,
+   budget, affected resources, and status.
+3. Keep one observable worker when one lead dominates.
+4. Spawn a second worker only when both leads are evidence-backed, independently
+   provable, bounded, non-conflicting, and neither has already proven access.
+5. Process checkpoints and operator messages while both tracks run.
+6. Trigger impact lock on verified read, execution, authentication, shell, or flag
+   access; pause the competing branch and preserve its state.
+7. Reapply the same routing gate after foothold when independent privilege paths
+   appear.
+
+After parity is established, extend the adapter from its conservative two-lead
+contract to the configurable 0-4 weighted portfolio. Windows and AD adapters add
+their own evidence types, resource keys, and interference rules while sharing the
+same supervisor lifecycle.
+
+### Command Vault as the solved-case evidence source
+
+Wire Command Vault into the planner as a provenance-preserving corpus of successful
+and failed episodes from solved labs. It supplies empirical priors for track ranking,
+budgets, common prerequisites, and rabbit-hole detection. Current-target evidence
+still has priority over historical similarity.
+
+Keep retrieval modes explicit:
+
+| Mode | Retrieval boundary |
+| --- | --- |
+| Replay/evaluation | Exact solved cases, complete routes, failures, timing, and orchestration decisions |
+| Active solve | Cases matched only by observed products, versions, errors, configurations, binaries, groups, protocols, or techniques |
+
+During an active solve, prohibit queries by the current box name and exclude known
+solutions or writeup prose for that target. This preserves the existing workflow
+boundary: historical evidence helps choose how to investigate an observed signal;
+it does not reveal the current lab's route. Log the query, filters, returned case
+IDs, and provenance so retrieval remains auditable.
+
+Normalize each solved run into a case episode containing:
+
+- initial structured findings and evidence references;
+- candidate tracks plus their component scores and selection/defer decisions;
+- proof attempts, outcomes, false prerequisites, and failed approaches;
+- elapsed time, attempts, tool/inference cost, and stagnation points;
+- pivots, preemption, user steering, worker pause/stop, and interference events;
+- verified foothold/root milestones and the minimal supporting proof;
+- whether parallelism improved time-to-proof or added redundant work.
+
+Redact flags, credentials, tokens, and unnecessary target identifiers. Store opaque
+secret references and outcome classes rather than replayable sensitive values.
+Version the episode schema and preserve links to the original authorized run ledger
+where retention policy permits.
+
+Return compact prior cards to the planner instead of injecting entire writeups:
+
+```text
+Technique: exposed repository
+Support: 18 solved episodes
+Prerequisites: downloadable objects or directory listing
+Useful next proofs: recover config; inspect focused commit history
+Median path to credential: 3 actions
+Common dead end: exhaustive source review before secret search
+Interference: read-only / low
+Provenance: case IDs and evidence references
+```
+
+Prior cards contribute configurable components such as historical success rate,
+typical time-to-proof, prerequisite failure rate, and known interference. They may
+change a track's rank or initial budget, but they cannot promote a contradicted
+prerequisite or mark current-target impact as verified.
+
+At completion, write the new episode back to Command Vault after review/redaction.
+Record which tracks were proposed, which were selected, why they succeeded or
+failed, when workers were redirected or preempted, and whether the chosen crew size
+helped. This closes the feedback loop without allowing worker prose to become
+unreviewed canonical truth.
+
 ## Interface: tmux first
 
 Provide a team overview and one attachable agent view per session. The overview
 shows role, profile, current task, execution state, elapsed time, and unread events.
 Each agent pane shows its transcript, current tool activity, expandable output,
 and a composer clearly labeled with the recipient.
+
+A pentesting team view should make selection rationale, live activity, shared-state
+conflicts, and direct control visible without opening every transcript:
+
+```text
+┌ TEAM: lab-01  scope: 10.10.11.0/24  elapsed 00:18:42  budget 61% ┐
+│ ORCHESTRATOR · cloud-profile     PLAN v3 · 3 active · 1 queued  │
+│ Verified: web foothold candidate; proposing pause of Track T2   │
+├──────────────────────────────┬───────────────────────────────────┤
+│ T1 CVE validation · worker-a │ T2 ADCS analysis · researcher-b  │
+│ RUN tool: adapt-poc          │ PAUSE PENDING · safe point       │
+│ score .86 · attempt 2/3      │ score .72 · lease domain:corp    │
+│ msg: [type here]             │ msg: [type here]                 │
+├──────────────────────────────┼───────────────────────────────────┤
+│ T3 web path · debugger-c     │ QUEUE / CONFLICTS / MESSAGES     │
+│ VERIFIED candidate · proof ↗ │ T4 spray deferred: lockout risk  │
+│ [verify] [pause peers]       │ 2 unread · 1 lease blocked       │
+└──────────────────────────────┴───────────────────────────────────┘
+Keys: Enter inspect · m message · i interrupt · p pause · s stop · r resume
+```
+
+State labels must come from runtime events. Highlight stale progress, unknown
+outcomes, pending messages, blocked leases, and incomplete cancellation. Selecting
+a score opens its components and evidence; selecting a worker opens the complete
+conversation and tool stream. Destructive or shared-state decisions identify the
+requesting worker and affected resources.
 
 The initial tmux adapter creates only MyCLI-owned sessions and panes. It must not
 kill unrelated panes or assume pane numbers remain stable. Use stable agent IDs
@@ -281,7 +620,31 @@ messages survive restart; stalled clients do not stall execution.
 Gate: a bounded repository task runs with observable parallel workers, shared
 limits hold, and direct user redirection remains visible to the orchestrator.
 
-### Phase 4: workflow compatibility and performance
+### Phase 4: adaptive authorized pentesting crews
+
+- Define the recon finding and candidate-track schemas plus import adapters for
+  representative Linux, Windows, and AD recon output.
+- Implement the first policy adapter from `pentest-linux-new` plus its observable
+  parallel-routing overlay; preserve single-worker behavior when its fan-out gate
+  does not pass.
+- Define optional versioned `orchestration.toml` metadata without making it a
+  prerequisite for ordinary skills.
+- Implement explainable track ranking and interference-aware portfolio selection.
+- Add assignment envelopes, progress/milestone events, budgets, leases, pause and
+  stop-on-verified-signal behavior.
+- Implement the pentesting overview and user-editable proposed crew plan.
+- Add Command Vault prior-card retrieval with strict active-solve filters, query
+  provenance, episode redaction, and reviewed post-solve writeback.
+- Keep automatic state-changing actions behind the effective scope/safety policy.
+
+Gate: fixture-driven recon yields a deterministic explained plan: one strong CVE
+signal produces one observable worker, while independent findings produce a bounded
+crew. Conflicting AD actions cannot run concurrently. A verified path pauses
+overlapping workers, preserves resumable state, and remains overridable by the user.
+The Linux adapter reproduces its existing two-lead routing contract before wider
+fan-out, and active-solve retrieval cannot return the current target's known route.
+
+### Phase 5: workflow compatibility and performance
 
 - Report missing tools and unsupported workflow metadata before execution.
 - Test workflow portability separately from Markdown discovery.
@@ -297,6 +660,21 @@ Use meaningful state-machine and integration tests for cancellation races, dupli
 messages, restart recovery, policy inheritance, custom/MCP tool preservation,
 output bounds, workspace isolation, and provider concurrency limits. Preserve the
 existing provider, streaming, compaction, and session regressions.
+
+For adaptive pentesting, use captured or synthetic recon fixtures and mock tools to
+test scoring, dominance, portfolio diversity, lease conflicts, lockout budgets,
+stagnation, milestone verification, and stop-on-signal races without touching a
+live target. Add authorized lab smoke tests only after deterministic cases pass.
+
+Build a replay corpus from completed workflow ledgers and recon event streams. For
+each case, compare the sequential baseline, the existing conservative routing
+policy, and the adaptive planner on spawn timing, lead independence, time-to-first
+verified proof, wasted attempts, preemption latency, and operator steering delivery.
+
+Evaluate Command Vault with leave-one-case-out replay: exclude the evaluated case
+and all aliases from retrieval, reveal only its recon events over time, and measure
+whether prior cards improve ranking and budgeting without exposing its solution.
+Test exact-target, alias, and writeup-leakage filters as security boundaries.
 
 Run a small real-provider smoke test only with configured access and bounded cost.
 Do not use startup time or token throughput as a substitute for task correctness.
