@@ -283,7 +283,7 @@ impl Panel {
 /// Icon and colour for a tool, so the transcript is scannable at a glance.
 pub fn tool_style(name: &str) -> (&'static str, &'static str) {
     match name {
-        "Bash" | "bash" | "PowerShell" => ("❯", MAGENTA),
+        "Bash" | "bash" | "PowerShell" | "BackgroundStart" => ("❯", MAGENTA),
         "Read" | "file_read" => ("◇", BLUE),
         "Write" | "file_write" => ("✎", YELLOW),
         "Edit" | "file_edit" => ("✎", YELLOW),
@@ -297,7 +297,7 @@ pub fn tool_style(name: &str) -> (&'static str, &'static str) {
 /// One-line summary of a tool call, for the transcript header.
 pub fn tool_summary(name: &str, input: &serde_json::Value, max: usize) -> String {
     let s = match name {
-        "Bash" | "bash" | "PowerShell" => str_field(input, "command"),
+        "Bash" | "bash" | "PowerShell" | "BackgroundStart" => str_field(input, "command"),
         "Read" | "file_read" | "Write" | "file_write" | "Edit" | "file_edit" => {
             str_field(input, "file_path")
         }
@@ -336,7 +336,7 @@ pub fn tool_detail(name: &str, input: &serde_json::Value, width: usize) -> Vec<S
     let mut rows = Vec::new();
 
     match name {
-        "Bash" | "bash" | "PowerShell" => {
+        "Bash" | "bash" | "PowerShell" | "BackgroundStart" => {
             let cmd = str_field(input, "command");
             for line in wrap(&cmd, width) {
                 rows.push(format!("{BOLD}{line}{RESET}"));

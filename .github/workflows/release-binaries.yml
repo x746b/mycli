@@ -6,7 +6,7 @@ on:
       tag:
         description: Release tag/version to build
         required: true
-        default: v2.0.0
+        default: v2.1.0
         type: string
       source_ref:
         description: Optional full commit SHA (defaults to the release tag)

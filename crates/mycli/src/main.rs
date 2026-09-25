@@ -2,6 +2,7 @@
 //! Local-first (oMLX), cloud-ready (Kimi, DeepSeek).
 
 mod config;
+mod background;
 mod keys;
 mod latex;
 mod latex_layout;
@@ -59,7 +60,7 @@ pub struct Cli {
     #[arg(long)]
     pub max_turns: Option<u32>,
 
-    /// Tool tier: simple (Read/Write/Bash), medium (+ Edit/Glob/Grep),
+    /// Tool tier: simple (Read/Write/Bash), medium (+ Edit/Glob/Grep/background commands),
     /// full (+ WebFetch/Skills). Auto-detected from provider if omitted.
     #[arg(long, short = 't', value_name = "TIER")]
     pub tools: Option<String>,
@@ -93,6 +94,15 @@ pub struct Cli {
 async fn main() -> anyhow::Result<()> {
     let _output_cleanup = cersei_tools::output::ArchiveCleanup;
     let cli = Cli::parse();
+    #[cfg(unix)]
+    {
+        let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+        tokio::spawn(async move {
+            terminate.recv().await;
+            background::MANAGER.emergency_shutdown();
+            std::process::exit(143);
+        });
+    }
 
     let mut cfg = config::load();
     config::apply_cli_overrides(&cli, &mut cfg)?;
@@ -102,5 +112,7 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    repl::run(cli, cfg).await
+    let result = repl::run(cli, cfg).await;
+    background::MANAGER.shutdown(None).await;
+    result
 }

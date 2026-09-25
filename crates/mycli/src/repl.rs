@@ -305,6 +305,7 @@ impl MyHelper {
                 "/bench",
                 "/grade",
                 "/tools",
+                "/tasks",
                 "/mcp",
                 "/usage",
                 "/persona",
@@ -663,6 +664,9 @@ fn build_system_prompt(config: &Config, prompts: &crate::prompts::Prompts, model
 
     let mut prompt = prompts.render(&config.persona, tier, model);
     prompt.push_str(&crate::memory::prompt(window, config.max_tokens));
+    if matches!(tier, "medium" | "full") {
+        prompt.push_str("\n# Background commands\nUse BackgroundStart for a long noninteractive command when independent work can continue. Keep its task ID and use BackgroundOutput to check progress and actual exit status before reporting success. Use BackgroundList to recover IDs and BackgroundStop to terminate work. Avoid tight polling. These are shell jobs, not agents; they stop on CLI exit, session switch, or switching to simple tools. Foreground turn cancellation does not stop them.\n");
+    }
 
     if has_search {
         prompt.push_str(
@@ -726,6 +730,10 @@ fn build_tools(tier: &str, working_dir: &std::path::Path, skills: &crate::skills
     tools.push(Box::new(cersei_tools::file_edit::FileEditTool));
     tools.push(Box::new(cersei_tools::glob_tool::GlobTool));
     tools.push(Box::new(cersei_tools::grep_tool::GrepTool));
+
+    if matches!(tier, "medium" | "full") {
+        tools.extend(crate::background::tools());
+    }
 
     if tier == "medium" {
         return tools;
@@ -1373,6 +1381,9 @@ fn handle_command(cmd: &str, args: &str, config: &Config, current_model: &str, p
             eprintln!("  /grade             Pick a cloud grader and grade saved results");
             eprintln!("  /tools             Show active tool tier");
             eprintln!("  /tools <tier>      Switch tier (simple/medium/full)");
+            eprintln!("  /tasks            List background commands (medium/full)");
+            eprintln!("  /tasks output <id> Read current output and exit status");
+            eprintln!("  /tasks stop <id|all> Stop background commands");
             eprintln!("  /mcp               Show MCP server status");
             eprintln!("  /mcp verbose       List all MCP tools grouped by server");
             eprintln!("  /usage             Show cloud provider balances");
@@ -1694,6 +1705,9 @@ async fn rebuild_agent(
                 renderer.error(&format!("Session checkpoint failed: {error:#}"));
                 return false;
             }
+            if config::resolve_tool_tier(config) == "simple" {
+                crate::background::MANAGER.shutdown(Some(&session.snapshot().metadata.id)).await;
+            }
             *agent = new_agent;
             render::forget_model_observations();
             *current_model = resolved.clone();
@@ -1786,6 +1800,7 @@ pub async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
             if let Some(prev) = *last {
                 if now.duration_since(prev).as_millis() < 500 {
                     eprintln!("\nForce exit.");
+                    crate::background::MANAGER.emergency_shutdown();
                     std::process::exit(130);
                 }
             }
@@ -1798,6 +1813,7 @@ pub async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                 eprintln!("\n  Cancelling... (Ctrl+C again to force exit)");
             } else {
                 eprintln!("\nGoodbye.");
+                crate::background::MANAGER.emergency_shutdown();
                 std::process::exit(0);
             }
         });
@@ -1928,6 +1944,9 @@ pub async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
 
     loop {
         if crate::output_view::take_requested() { crate::output_view::show(); }
+        for notice in crate::background::MANAGER.notices(&session.snapshot().metadata.id) {
+            renderer.notice(&notice);
+        }
         prompt_open();
         // Anything typed while the model was working was consumed by the key
         // watcher; put it back so type-ahead survives.
@@ -1998,6 +2017,17 @@ pub async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                 Some(pos) => (&trimmed[..pos], trimmed[pos..].trim()),
                 None => (trimmed, ""),
             };
+            if cmd == "tasks" {
+                if !matches!(config::resolve_tool_tier(&config), "medium" | "full") {
+                    renderer.notice("Background commands require /tools medium or /tools full.");
+                } else {
+                    match crate::background::slash(&session.snapshot().metadata.id, args).await {
+                        Ok(output) => renderer.notice(&output),
+                        Err(error) => renderer.error(&error),
+                    }
+                }
+                continue;
+            }
             if ["sessions", "resume"].contains(&cmd) {
                 if cmd != "resume" && args == "list" {
                     for item in crate::sessions::list()? {
@@ -2039,6 +2069,7 @@ pub async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                 }.await;
                 match resumed {
                     Ok(Some((journal, next, next_skills, next_agent, model))) => {
+                        crate::background::MANAGER.shutdown(Some(&session.snapshot().metadata.id)).await;
                         session = journal; config = next; skills = next_skills; agent = next_agent; current_model = model;
                         is_first = agent.messages().is_empty();
                         render::forget_model_observations();
@@ -2172,8 +2203,11 @@ pub async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                     }
                 }
                 CommandResult::SwitchTier(tier) => {
-                    config.tool_tier = tier;
-                    rebuild_agent(&mut agent, &mut current_model, &config, &mut is_first, &mut renderer, &prompts, &skills, &session).await;
+                    let mut next_config = config.clone();
+                    next_config.tool_tier = tier;
+                    if rebuild_agent(&mut agent, &mut current_model, &next_config, &mut is_first, &mut renderer, &prompts, &skills, &session).await {
+                        config = next_config;
+                    }
                 }
                 CommandResult::SwitchPersona(persona) => {
                     let mut next_config = config.clone();
@@ -2316,6 +2350,25 @@ pub async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
 #[cfg(test)]
 mod balance_tests {
     use super::*;
+
+    #[test]
+    fn background_tools_are_only_registered_for_medium_and_full() {
+        let root = tempfile::tempdir().unwrap();
+        let skills = crate::skills::Skills {
+            registry: Arc::new(parking_lot::RwLock::new(cersei_tools::skills::registry::Registry::new(Vec::new(), root.path(), &[]))),
+            source: "test".into(), paths: Vec::new(),
+        };
+        for tier in ["simple", "medium", "full", "invalid"] {
+            let tools = build_tools(tier, root.path(), &skills);
+            for name in ["BackgroundStart", "BackgroundList", "BackgroundOutput", "BackgroundStop"] {
+                assert_eq!(tools.iter().any(|t| t.name() == name), matches!(tier, "medium" | "full"), "{tier}: {name}");
+            }
+            if tier == "simple" { assert_eq!(tools.len(), 3); }
+            if let Some(start) = tools.iter().find(|t| t.name() == "BackgroundStart") {
+                assert_eq!(start.permission_level(), PermissionLevel::Execute);
+            }
+        }
+    }
 
     #[test]
     fn parses_topup_date() {

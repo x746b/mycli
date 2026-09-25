@@ -12,9 +12,9 @@ $ mycli
  | | | | | | |_| | |____| |____| |
  |_| |_| |_|\__, |\_____|______|_|
              __/ |
-            |___/           v2.0.0
+            |___/           v2.1.0
 
-  tools [medium]: Read, Write, Bash, Edit, Glob, Grep, WebSearch
+  tools [medium]: Read, Write, Bash, Edit, Glob, Grep, BackgroundStart, BackgroundList, BackgroundOutput, BackgroundStop, WebSearch
   Session: Untitled session (891086a4-eb38-4b43-8270-0a142919db7a)
   omlx · Qwen3.8-27B · tools:medium · max_turns:30 · /opt/mycli
   ctrl+c interrupt · ctrl+d exit · / commands · ctrl+o thinking · ctrl+t tool output · ctrl+u clear input
@@ -358,6 +358,9 @@ mycli --cloud deepseek -y "refactor main.rs"   # auto-approve tools
 | `/reasoning [level]` | Pick or set reasoning effort without resetting the conversation; `default` resets the override |
 | `/tools` | Interactive tool tier picker |
 | `/tools <tier>` | Switch tier (`simple` / `medium` / `full`) |
+| `/tasks [list]` | List background commands (medium/full) |
+| `/tasks output <id>` | Read current background output and exit status |
+| `/tasks stop <id>` / `/tasks stop all` | Stop one or all background commands |
 | `/persona [name]` | Pick or switch to any configured persona |
 | `/skill [name args]` | Pick or run a skill; `list`, `paths`, and `reload` inspect/manage the catalog |
 | `/prompts path` | Show active prompt source and preferred file |
@@ -459,10 +462,16 @@ Designed to match tool complexity to model capability:
 | Tier | Tools | Best for |
 |------|-------|----------|
 | **simple** | Read, Write, Bash | small models — minimal surface, hard to mess up |
-| **medium** | + Edit, Glob, Grep, WebSearch | 24B+ models — structured tools, edit tolerance helps |
+| **medium** | + Edit, Glob, Grep, WebSearch, BackgroundStart/List/Output/Stop | 24B+ models — structured tools, edit tolerance helps |
 | **full** | + WebFetch, Skill, MCP tools | bigger local and cloud models — full power |
 
 **Auto-detection:** local providers default to `medium`; cloud providers default to `full`.
+
+Background commands let the model continue independent work while a long command
+runs. Use `/tasks` to inspect jobs and `/tasks stop <id>` to stop one yourself.
+Jobs have bounded output and timeouts, and stop on CLI exit, session change, or
+switching to simple tools. See [background commands](docs/background-tasks.md)
+for tools, output retention, and lifecycle details.
 
 The system prompt adapts to the tier — small models only see descriptions of tools they actually have access to. MCP servers start on `full` only.
 

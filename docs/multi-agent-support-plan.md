@@ -1,6 +1,8 @@
 # Multi-agent support implementation plan
 
-Status: proposed; implementation has not started.
+Status: broader team runtime proposed. MyCLI 2.1.0 implements the bounded,
+process-local [background command milestone](background-tasks.md); durable
+supervision, recovery, and agent delegation remain unimplemented.
 
 Date: 2026-09-22.
 
