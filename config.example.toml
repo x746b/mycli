@@ -119,6 +119,9 @@ model = "gemini-3.1-pro-preview"
 [cloud.openai]
 api_key = "sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 model = "gpt-5.4"
+# Optional explicit routing, also supported on named OpenAI profiles such as luna:
+# organization = "org-your-organization"
+# project = "proj-your-project"
 # reasoning_effort = "high" # default | none | low | medium | high | xhigh
 # GPT-5.6 models also support max. /cloud and /reasoning offer supported levels.
 # Optional, for `/usage` only. OpenAI has no credit-balance endpoint at all —

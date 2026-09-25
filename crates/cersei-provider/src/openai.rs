@@ -766,9 +766,23 @@ pub struct OpenAiBuilder {
     base_url: Option<String>,
     model: Option<String>,
     reasoning_levels: Option<Vec<String>>,
+    organization: Option<String>,
+    project: Option<String>,
 }
 
 impl OpenAiBuilder {
+    /// Route requests through an explicitly selected OpenAI organization.
+    pub fn organization(mut self, organization: impl Into<String>) -> Self {
+        self.organization = Some(organization.into());
+        self
+    }
+
+    /// Route requests through an explicitly selected OpenAI project.
+    pub fn project(mut self, project: impl Into<String>) -> Self {
+        self.project = Some(project.into());
+        self
+    }
+
     pub fn api_key(mut self, key: impl Into<String>) -> Self {
         self.api_key = Some(key.into());
         self
@@ -802,12 +816,25 @@ impl OpenAiBuilder {
             ));
         };
 
+        let mut headers = reqwest::header::HeaderMap::new();
+        for (name, value) in [("openai-organization", self.organization), ("openai-project", self.project)] {
+            if let Some(value) = value {
+                if value.trim().is_empty() {
+                    return Err(CerseiError::Config(format!("{name} must not be empty")));
+                }
+                let value = reqwest::header::HeaderValue::from_str(&value)
+                    .map_err(|_| CerseiError::Config(format!("Invalid {name} header value")))?;
+                headers.insert(name, value);
+            }
+        }
+        let client = reqwest::Client::builder().default_headers(headers).build()
+            .map_err(|e| CerseiError::Config(format!("Could not build HTTP client: {e}")))?;
         Ok(OpenAi {
             auth,
             base_url: self.base_url.unwrap_or_else(|| OPENAI_API_BASE.to_string()),
             default_model: self.model.unwrap_or_else(|| "gpt-4o".to_string()),
             reasoning_levels: self.reasoning_levels,
-            client: reqwest::Client::new(),
+            client,
         })
     }
 }
@@ -815,6 +842,49 @@ impl OpenAiBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn explicit_project_headers_are_sent_and_do_not_leak_to_another_client() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let mut requests = Vec::new();
+            for _ in 0..2 {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                loop {
+                    let mut bytes = [0; 1024];
+                    let count = socket.read(&mut bytes).await.unwrap();
+                    assert!(count > 0);
+                    request.extend_from_slice(&bytes[..count]);
+                    if request.windows(4).any(|w| w == b"\r\n\r\n") { break; }
+                }
+                requests.push(String::from_utf8(request).unwrap().to_ascii_lowercase());
+                socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}").await.unwrap();
+            }
+            requests
+        });
+        let routed = OpenAi::builder().api_key("test").organization("org-test").project("proj-test").build().unwrap();
+        let ordinary = OpenAi::builder().api_key("test").build().unwrap();
+        for provider in [routed, ordinary] {
+            provider.client.get(format!("http://{address}/responses")).send().await.unwrap();
+        }
+        let requests = server.await.unwrap();
+        assert!(requests[0].contains("openai-organization: org-test\r\n"));
+        assert!(requests[0].contains("openai-project: proj-test\r\n"));
+        assert!(!requests[1].contains("openai-organization:"));
+        assert!(!requests[1].contains("openai-project:"));
+    }
+
+    #[test]
+    fn invalid_project_headers_are_rejected_without_echoing_the_value() {
+        for value in ["", "\r\ninjected: bad"] {
+            let error = OpenAi::builder().api_key("test").project(value).build().err().unwrap().to_string();
+            assert!(error.contains("openai-project"));
+            assert!(!error.contains("injected"));
+        }
+    }
 
     #[test]
     fn sampling_and_thinking_are_explicit_and_validated() {

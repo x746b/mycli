@@ -41,3 +41,18 @@ Upstream remains at the source revision inspected for the multi-agent plan.
 No SDK crates, provider encodings, dependencies, or streaming APIs are changed.
 Validation covers command lifecycle, session isolation, limits, process-group
 cleanup, foreground concurrency, and tier registration, plus workspace regressions.
+
+## Explicit OpenAI project routing — 2026-09-25
+
+The working Codex API launcher sets `OpenAI-Organization` and `OpenAI-Project`.
+With the same key, MyCLI's tool/reasoning requests to GPT-6 Luna returned 403
+without these headers; bounded direct requests succeeded when both were supplied.
+Simple text-only success did not establish access for MyCLI's request shape.
+
+Upstream's inspected OpenAI builder does not expose these routing fields. A small
+local addition accepts optional `organization` and `project` in each cloud profile
+and sets the corresponding headers on that provider's HTTP client. Responses and
+Chat Completions share the client; selecting another profile constructs a fresh
+client. No global environment override or credential substitution is introduced.
+Regression tests cover transmission, client isolation, profile selection, and
+invalid header rejection.

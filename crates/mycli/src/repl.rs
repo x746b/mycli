@@ -480,6 +480,14 @@ fn build_provider(config: &Config) -> anyhow::Result<(OpenAi, String)> {
         .api_key(api_key)
         .base_url(&config.base_url)
         .model(&model);
+    if let Some(profile) = config.cloud.get(&config.provider) {
+        if let Some(organization) = &profile.organization {
+            builder = builder.organization(organization);
+        }
+        if let Some(project) = &profile.project {
+            builder = builder.project(project);
+        }
+    }
     if let Some(levels) = config.reasoning_levels_override() {
         builder = builder.reasoning_levels(levels.to_vec());
     }
@@ -2350,6 +2358,26 @@ pub async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
 #[cfg(test)]
 mod balance_tests {
     use super::*;
+
+    #[test]
+    fn project_routing_is_applied_only_to_the_selected_cloud_profile() {
+        let mut config: Config = toml::from_str(r#"
+            provider = "luna"
+            model = "gpt-6-luna"
+            api_key = "test"
+            base_url = "https://api.openai.com/v1"
+            [cloud.luna]
+            organization = "org-test"
+            project = "invalid\nheader"
+        "#).unwrap();
+        assert!(build_provider(&config).is_err());
+        config.cloud.get_mut("luna").unwrap().project = Some("proj-test".into());
+        assert!(build_provider(&config).is_ok());
+        config.cloud.get_mut("luna").unwrap().project = Some("invalid\nheader".into());
+        config.provider = "omlx".into();
+        config.model = "local-test".into();
+        assert!(build_provider(&config).is_ok());
+    }
 
     #[test]
     fn background_tools_are_only_registered_for_medium_and_full() {

@@ -37,6 +37,10 @@ use std::path::{Path, PathBuf};
 pub struct CloudProfile {
     /// API key for this cloud provider
     pub api_key: String,
+    /// Explicit OpenAI organization routing for this profile's requests.
+    pub organization: Option<String>,
+    /// Explicit OpenAI project routing for this profile's requests.
+    pub project: Option<String>,
     /// Admin key, used only for billing/usage queries. OpenAI's Costs API needs
     /// an `sk-admin-…` key with the `api.usage.read` scope; ordinary `sk-` keys
     /// get 403. Falls back to OPENAI_ADMIN_KEY when unset.
