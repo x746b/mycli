@@ -12,7 +12,7 @@ LOG_FILE="${LOG_FILE:-$MODELS_DIR/download.log}"
 # Container-local isolated environment; requires the uv Python image in Compose.
 mkdir -p /tmp/hf-model-downloader
 uv venv --python /usr/local/bin/python3 /tmp/hf-model-downloader/.venv
-uv pip install --python /tmp/hf-model-downloader/.venv/bin/python3 'huggingface_hub>=1,<2'
+uv pip install --python /tmp/hf-model-downloader/.venv/bin/python3 'huggingface_hub>=2.4,<3'
 HF=/tmp/hf-model-downloader/.venv/bin/hf
 FAILED=0
 while IFS= read -r line || [[ -n "$line" ]]; do
