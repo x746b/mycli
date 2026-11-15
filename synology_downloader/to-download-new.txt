@@ -1,0 +1,2 @@
+# Ornith Q5e: current 17 shards plus configuration/tokenizer files, ~89 GB.
+scottlowry/Ornith-1.5-122B-oQ5e-mtp@89e833dcb656776148e7cc08a7f79b3e1418a18b##model-*-of-00017.safetensors,*.json,*.jinja,*.txt,README.md
