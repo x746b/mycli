@@ -368,7 +368,7 @@ mycli --cloud deepseek -y "refactor main.rs"   # auto-approve tools
 | `/usage` | Show cloud balances / spend (Kimi, DeepSeek, OpenAI) |
 | `/mcp` | Show each MCP server's status — tools discovered, or why it failed |
 | `/mcp verbose` | List every discovered MCP tool, grouped by server |
-| `/bench` | Open the benchmark menu: capability tests, refusal comparison, grading, and local-model listing |
+| `/bench` | Open the benchmark menu: capability tests, live HTB tasks, refusal comparison, grading, and local-model listing |
 | `/grade` | Select and grade saved benchmark results with a configured cloud provider or Codex |
 | `/thinking [on\|off]` | Turn reasoning on or off **at the model level** (see below) |
 | `/thinking last` | Reprint the last reasoning block |
@@ -975,7 +975,7 @@ settings does not change or automatically load your Codex configuration.
 
 ## Benchmarking
 
-MyCLI 1.2.0 includes a terminal-native benchmark suite for comparing local
+MyCLI includes a terminal-native benchmark suite for comparing local
 models without a web interface. It separates three useful questions:
 
 - **Capability:** can the model solve the task accurately and follow its output constraints?
@@ -986,6 +986,14 @@ From an interactive MyCLI session, `/bench` opens the complete workflow and
 `/grade` jumps directly to saved-result grading. The picker supports arrow-key
 navigation, Space to toggle an item, `a` to select or clear all, Enter to
 confirm, and Esc to cancel.
+
+The menu also offers **Run live HTB task**. After the operator spawns a Linux
+or Windows machine, supply its current IP and optionally its name. MyCLI
+streams the full session, lets you press Esc to interrupt a turn and steer the
+model, uses a `/tmp/bench-<timestamp>` workspace, and retains a transcript under
+`bench/results/`. The task briefings use `/opt/htb-mcp` helpers when installed
+and fall back to available standard tools; flag reads still need operator
+verification.
 
 ### Built into MyCLI
 
