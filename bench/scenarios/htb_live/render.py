@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Render a platform-specific live HTB briefing with a current IP and optional name."""
+from __future__ import annotations
+
 import argparse
 from ipaddress import ip_address
 from pathlib import Path
