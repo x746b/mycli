@@ -172,8 +172,10 @@ route uses `tun0`; this does not verify active-machine identity or health.
 
 Replace the example IP with the actual instance IP; omit `--name` if you do
 not want to supply one. The box name is context only. Each briefing is
-self-contained and requires the installed Linux/Windows recon helper to start
-as a background task. MyCLI 2.3.0 enables Bash auto-handoff by default in medium/full tiers: a
+self-contained. When `/opt/htb-mcp` helpers are installed, the briefing uses
+`tmux-stream.sh` in the persistent `htb` session for background recon, an
+independent full-TCP sidecar, and incremental `recon_events.jsonl` handling.
+Other installations use available standard scanners and service checks. MyCLI 2.3.0 enables Bash auto-handoff by default in medium/full tiers: a
 foreground command still running at 60 seconds becomes a tracked task, with a
 health notice at 300 seconds. Set `MYCLI_BASH_AUTO_BACKGROUND=0` to disable it. It also directs the model to the relevant helper catalog
 and post-access enumeration script. The

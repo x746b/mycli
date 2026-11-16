@@ -21,7 +21,7 @@ def render_prompt(platform: str, target_ip: str, name: str | None = None) -> str
         if not NAME_RE.fullmatch(name):
             raise ValueError("box name must be 1–80 letters, digits, spaces, dots, underscores, or hyphens")
     prompt = (HERE / PLATFORMS[platform]).read_text(encoding="utf-8")
-    if prompt.count("{{TARGET_IP}}") != 2 or prompt.count("{{BOX_CONTEXT}}") != 1:
+    if prompt.count("{{TARGET_IP}}") < 2 or prompt.count("{{BOX_CONTEXT}}") != 1:
         raise ValueError(f"unexpected placeholders in {PLATFORMS[platform]}")
     context = f"The operator identifies this box as **{name}**." if name else "No box name was supplied."
     return prompt.replace("{{TARGET_IP}}", str(address)).replace("{{BOX_CONTEXT}}", context).strip()

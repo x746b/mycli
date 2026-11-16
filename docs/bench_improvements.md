@@ -84,7 +84,7 @@ The phase specifications and acceptance criteria below remain the target design.
 
 ### Live HTB benchmark content handoff (2026-11-16)
 
-The operator spawns each box and supplies its current HTB VPN IP. The self-contained model-facing briefs are [Linux](../bench/scenarios/htb_live/linux.md) and [Windows](../bench/scenarios/htb_live/windows.md). The optional box name is context only. They describe scope, a compact evidence-driven test cycle, mandatory background recon, relevant helper catalogs and post-access enumeration, and the user/root goals without disclosing a solve route. `render.py` fills in the current IP. No operator-only scenario notes are stored in the live scenario directory. The live runner disables MyCLI’s Skill tool while keeping other configured tools available.
+The operator spawns each box and supplies its current HTB VPN IP. The self-contained model-facing briefs are [Linux](../bench/scenarios/htb_live/linux.md) and [Windows](../bench/scenarios/htb_live/windows.md). The optional box name is context only. They describe scope, a compact evidence-driven test cycle, conditional HTB helper recon through `tmux-stream.sh` with standard-tool fallback, relevant helper catalogs and post-access enumeration, and the user/root goals without disclosing a solve route. `render.py` fills in the current IP. No operator-only scenario notes are stored in the live scenario directory. The live runner disables MyCLI’s Skill tool while keeping other configured tools available.
 
 The earlier handover's synthetic-first recommendation remains applicable for stable cross-model scores. The live-box track is an additional operator-directed test with fresh resets and evaluator-held proofs.
 
