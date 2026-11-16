@@ -325,7 +325,7 @@ const TOOL_USE_GUIDELINES: &str = r#"
 - For searches, prefer Grep over `grep`; prefer Glob over `find`
 - Parallelize independent tool calls in a single response
 - For file edits: always read the file first, then make targeted edits
-- Bash commands timeout after 2 minutes; use background mode for long operations
+- Follow Bash's tool description for timeout and background behavior; when a command returns a tracked task ID, check its output and actual exit status with the available background tools before reporting success
 "#;
 
 const ACTIONS_SECTION: &str = r#"

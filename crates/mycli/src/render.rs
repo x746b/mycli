@@ -77,6 +77,12 @@ const RESULT_PREVIEW: usize = 6;
 /// How many lines of a failed tool's output to echo inline.
 const ERROR_PREVIEW: usize = 10;
 
+fn full_tool_output() -> bool {
+    std::env::var("MYCLI_FULL_TOOL_OUTPUT")
+        .map(|value| !value.is_empty() && value != "0")
+        .unwrap_or(false)
+}
+
 pub struct Renderer {
     buffer: String,
     in_thinking: bool,
@@ -329,6 +335,9 @@ impl Renderer {
             out.push_str(&format!("  {DIM}{summary}{RESET}"));
         }
         out.push_str("\r\n");
+        if full_tool_output() {
+            out.push_str(&format!("    input: {}\r\n", input));
+        }
         // One write, so a concurrent dialog cannot land mid-header.
         let mut err = io::stderr();
         let _ = err.write_all(out.as_bytes());
@@ -345,7 +354,7 @@ impl Renderer {
             summarize_result(name, result, lines, is_error, duration)
         );
 
-        let take = if is_error { ERROR_PREVIEW } else { RESULT_PREVIEW };
+        let take = if full_tool_output() { usize::MAX } else if is_error { ERROR_PREVIEW } else { RESULT_PREVIEW };
         let body_color = if is_error { RED } else { DIM };
         let width = ui::panel_width().saturating_sub(6);
         let mut shown = 0;
@@ -358,7 +367,7 @@ impl Renderer {
             }
             out.push_str(&format!(
                 "    {body_color}{}{RESET}\r\n",
-                ui::truncate(line, width)
+                if full_tool_output() { line.to_string() } else { ui::truncate(line, width) }
             ));
             shown += 1;
         }

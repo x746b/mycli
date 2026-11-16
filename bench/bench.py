@@ -9,24 +9,35 @@ scripts and CI.
 from __future__ import annotations
 
 import argparse
+from contextlib import nullcontext
+from datetime import datetime, timezone
 import ast
 import fnmatch
+import fcntl
 import hashlib
+import ipaddress
 import json
 import os
+import pty
 from pathlib import Path
 import re
 import select
+import signal
 import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import termios
 import time
 import tty
+import uuid
 import urllib.error
 import urllib.request
+
+# Keep imported benchmark helpers from leaving bytecode caches in the source tree.
+sys.dont_write_bytecode = True
 
 try:
     import tomllib
@@ -38,6 +49,7 @@ except ImportError:  # Python 3.10 and older
 
 
 from config_paths import user_file
+from scenarios.htb_live.render import render_prompt
 
 ROOT = Path(__file__).resolve().parent
 PROMPTS = ROOT / "prompts"
@@ -197,10 +209,198 @@ def mycli_binary() -> str:
     raise SystemExit("could not find mycli beside bench/ or on PATH")
 
 
+TOOL_POLICIES = ("suite", "simple", "medium", "full", "auto", "inherit")
+
+
+def resolve_test_tools(test: dict, policy: str = "suite") -> dict:
+    """Return a copy with the requested policy and actual CLI tier recorded."""
+    if policy not in TOOL_POLICIES:
+        raise ValueError(f"invalid tool policy: {policy}")
+    tier = str(test.get("tier", "simple")) if policy == "suite" else policy
+    tier = "full" if tier == "advanced" else tier
+    if tier not in TOOL_POLICIES[1:]:
+        raise ValueError(f"invalid test tier: {tier}")
+    return {**test, "tier": tier, "tool_policy": policy}
+
+
+def benchmark_command(binary: str, model: str, test: dict, work: Path,
+                      max_turns: int | None = None, auto_approve: bool = True) -> list[str]:
+    command = [binary, "-m", model, "-p", str(test.get("persona", "code"))]
+    if test["tier"] != "inherit":
+        command.extend(["-t", test["tier"]])
+    if max_turns is not None:
+        command.extend(["--max-turns", str(max_turns)])
+    command.extend(["-C", str(work)])
+    if auto_approve:
+        command.append("-y")
+    command.append(str(test.get("prompt", "")))
+    return command
+
+
+def execute_benchmark(command: list[str], env: dict, timeout: int,
+                      stdout_path: Path, stderr_path: Path,
+                      live_output: bool = False,
+                      session_path: Path | None = None) -> tuple[str, int | None]:
+    """Retain both streams; for live trials also display them as they arrive."""
+    def private_log(path: Path):
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        os.fchmod(fd, 0o600)
+        return os.fdopen(fd, "wb", buffering=0)
+
+    with private_log(stdout_path) as stdout, private_log(stderr_path) as stderr, (private_log(session_path) if session_path else nullcontext()) as session:
+        stream_lock = threading.Lock()
+        process = subprocess.Popen(command,
+                                   stdout=subprocess.PIPE if live_output else stdout,
+                                   stderr=subprocess.PIPE if live_output else stderr,
+                                   env=env, start_new_session=True)
+        pumps = []
+        if live_output:
+            def pump(source, log, display):
+                try:
+                    while chunk := os.read(source.fileno(), 4096):
+                        with stream_lock:
+                            log.write(chunk)
+                            if session is not None:
+                                session.write(chunk)
+                            display.write(chunk)
+                            display.flush()
+                finally:
+                    source.close()
+            for source, log, display in ((process.stdout, stdout, sys.stdout.buffer),
+                                         (process.stderr, stderr, sys.stderr.buffer)):
+                thread = threading.Thread(target=pump, args=(source, log, display), daemon=True)
+                thread.start()
+                pumps.append(thread)
+        try:
+            code = process.wait(timeout=timeout)
+            status = "completed" if code == 0 else "process_error"
+        except (subprocess.TimeoutExpired, KeyboardInterrupt) as exc:
+            status = "cancelled" if isinstance(exc, KeyboardInterrupt) else "timeout"
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                pass
+            finally:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                process.wait()
+        for thread in pumps:
+            thread.join(timeout=5)
+        return status, process.returncode
+
+
+def execute_live_pty(command: list[str], env: dict, timeout: int,
+                     session_path: Path, work: Path) -> tuple[str, int | None]:
+    """Run a live trial on a PTY so the operator sees and controls MyCLI."""
+    master, slave = pty.openpty()
+    if sys.stdout.isatty():
+        try:
+            size = fcntl.ioctl(sys.stdout.fileno(), termios.TIOCGWINSZ, b"\0" * 8)
+            fcntl.ioctl(slave, termios.TIOCSWINSZ, size)
+        except OSError:
+            pass
+    stdin_fd = sys.stdin.fileno()
+    interactive = os.isatty(stdin_fd)
+    previous = termios.tcgetattr(stdin_fd) if interactive else None
+    fd = os.open(session_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    os.fchmod(fd, 0o600)
+    status = "completed"
+    try:
+        with os.fdopen(fd, "wb", buffering=0) as transcript:
+            process = subprocess.Popen(command, stdin=slave, stdout=slave, stderr=slave,
+                                       cwd=work, env=env, start_new_session=True,
+                                       preexec_fn=lambda: fcntl.ioctl(slave, termios.TIOCSCTTY, 0))
+            os.close(slave)
+            slave = -1
+            if interactive:
+                tty.setcbreak(stdin_fd)
+            deadline = time.monotonic() + timeout
+            output_open = True
+            try:
+                while output_open or process.poll() is None:
+                    if time.monotonic() >= deadline:
+                        status = "timeout"
+                        break
+                    readable = [master] if output_open else []
+                    if interactive:
+                        readable.append(stdin_fd)
+                    ready, _, _ = select.select(readable, [], [], 0.1)
+                    if master in ready:
+                        try:
+                            chunk = os.read(master, 4096)
+                        except OSError:
+                            chunk = b""
+                        if chunk:
+                            transcript.write(chunk)
+                            sys.stdout.buffer.write(chunk)
+                            sys.stdout.buffer.flush()
+                        else:
+                            output_open = False
+                    if interactive and stdin_fd in ready:
+                        key = os.read(stdin_fd, 1024)
+                        if b"\x03" in key:
+                            status = "cancelled"
+                            break
+                        if key:
+                            try:
+                                os.write(master, key)
+                            except OSError:
+                                pass
+            except KeyboardInterrupt:
+                status = "cancelled"
+            if status in ("timeout", "cancelled"):
+                try:
+                    os.killpg(process.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+                try:
+                    process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    os.killpg(process.pid, signal.SIGKILL)
+                    process.wait()
+            else:
+                process.wait()
+                status = "completed" if process.returncode == 0 else "process_error"
+            # Keep any output emitted while the process was shutting down.
+            while True:
+                ready, _, _ = select.select([master], [], [], 0)
+                if not ready:
+                    break
+                try:
+                    chunk = os.read(master, 4096)
+                except OSError:
+                    break
+                if not chunk:
+                    break
+                transcript.write(chunk)
+                sys.stdout.buffer.write(chunk)
+                sys.stdout.buffer.flush()
+            return status, process.returncode
+    finally:
+        if previous is not None:
+            termios.tcsetattr(stdin_fd, termios.TCSADRAIN, previous)
+        os.close(master)
+        if slave >= 0:
+            os.close(slave)
+
+
+def positive_int(value: str) -> int:
+    number = int(value)
+    if number <= 0:
+        raise argparse.ArgumentTypeError("must be greater than zero")
+    return number
+
+
 def test_fingerprint(test: dict) -> str:
     material = {
         key: test.get(key)
-        for key in ("id", "prompt", "persona", "tier", "category", "area", "rubric")
+        for key in ("id", "prompt", "persona", "tier", "category", "area", "rubric", "tool_policy", "max_turns", "timeout")
     }
     encoded = json.dumps(material, sort_keys=True, ensure_ascii=False).encode()
     return hashlib.sha256(encoded).hexdigest()[:16]
@@ -228,6 +428,8 @@ category: {category(test)}
 area: {area(test)}
 persona: {test.get('persona', 'code')}
 tier: {test.get('tier', 'simple')}
+tool_policy: {test.get('tool_policy', 'suite')}
+resolved_tier: {test.get('tier') if test.get('tier') in ('simple', 'medium', 'full') else 'unknown'}
 difficulty: {test.get('difficulty', 'unspecified')}
 tags: {', '.join(map(str, test.get('tags', [])))}
 fingerprint: {test_fingerprint(test)}
@@ -284,8 +486,110 @@ def write_summary(models: list[str], tests: list[dict]) -> Path:
     return path
 
 
-def run_benchmark(args: argparse.Namespace) -> int:
-    tests = load_suite(args.suite)
+def latest_results() -> Path:
+    base = ROOT / "results"
+    pointer = base / "latest-run.txt"
+    if pointer.exists():
+        run_id = pointer.read_text().strip()
+        if re.fullmatch(r"[A-Za-z0-9_-]+", run_id):
+            candidate = base / "runs" / run_id
+            if candidate.is_dir():
+                return candidate
+    return base
+
+
+LIVE_NETWORKS = tuple(ipaddress.ip_network(value) for value in
+                      ("10.129.0.0/16", "10.10.10.0/24", "10.10.11.0/24"))
+
+
+def live_route(target_ip: str) -> str:
+    try:
+        address = ipaddress.IPv4Address(target_ip)
+    except ipaddress.AddressValueError as exc:
+        raise SystemExit(f"invalid target IPv4 address: {target_ip}") from exc
+    if not any(address in network for network in LIVE_NETWORKS):
+        raise SystemExit("target IP is outside supported HTB machine ranges")
+    try:
+        route = subprocess.run(["ip", "-4", "route", "get", str(address)],
+                               capture_output=True, text=True, timeout=5, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise SystemExit(f"cannot check HTB VPN route: {exc}") from exc
+    if route.returncode != 0 or not re.search(r"\bdev tun0\b", route.stdout):
+        raise SystemExit(f"target is not routed through tun0: {route.stdout.strip() or route.stderr.strip()}")
+    return route.stdout.strip()
+
+
+def create_live_workspace() -> Path:
+    mount = subprocess.run(["findmnt", "-T", "/tmp", "-n", "-o", "FSTYPE"],
+                           capture_output=True, text=True, timeout=5, check=False)
+    if mount.returncode != 0 or mount.stdout.strip() != "tmpfs":
+        raise SystemExit("live benchmark requires /tmp to be mounted as tmpfs")
+    for _ in range(3):
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        work = Path("/tmp") / f"bench-{stamp}"
+        try:
+            work.mkdir(mode=0o700)
+            return work
+        except FileExistsError:
+            continue
+    raise SystemExit("could not create a unique /tmp/bench-<timestamp> workspace")
+
+
+def prepare_live_config(work: Path, env: dict[str, str]) -> dict[str, str]:
+    """Keep this child MyCLI's sessions and memory under the tmpfs workspace."""
+    child_env = env.copy()
+    config_dir = work / ".xdg" / "mycli"
+    config_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
+    config_dir.chmod(0o700)
+    for name, override in (("config.toml", None),
+                           ("system-prompts.toml", "MYCLI_PROMPTS"),
+                           ("skills-internal.toml", "MYCLI_SKILLS")):
+        source = Path(child_env[override]).expanduser() if override and child_env.get(override) else user_file(name)
+        if source.is_file():
+            destination = config_dir / name
+            shutil.copyfile(source, destination)
+            destination.chmod(0o600)
+            if override and child_env.get(override):
+                child_env[override] = str(destination)
+    child_env["XDG_CONFIG_HOME"] = str(work / ".xdg")
+    child_env["MYCLI_BENCH_DISABLE_SKILLS"] = "1"
+    child_env["MYCLI_BENCH_STEERABLE"] = "1"
+    child_env.update({"TMPDIR": str(work), "TMP": str(work), "TEMP": str(work)})
+    return child_env
+
+
+def run_live(args: argparse.Namespace) -> int:
+    if not getattr(args, "yes", False) and not sys.stdin.isatty():
+        raise SystemExit("interactive permission review requires a TTY; use --yes only for deliberate unattended runs")
+    route = live_route(args.target_ip)
+    args.live_route = route
+    matches = resolve_models([args.model], list_models())
+    if len(matches) != 1:
+        raise SystemExit(f"live task requires one unambiguous local model; matched {len(matches)}")
+    try:
+        prompt = render_prompt(args.platform, args.target_ip, args.name)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    test = {"id": f"htb-live-{args.platform}", "kind": "live_lab", "category": "redteam",
+            "area": args.platform,
+            "persona": "redteam", "tier": "full", "prompt": prompt,
+            "rubric": "Manual live-target verification required. A completed process is not a successful solve.",
+            "target_ip": args.target_ip, "box_name": args.name, "route": route}
+    label = f" ({args.name})" if args.name else ""
+    print(f"Live HTB target: {args.platform}{label} at {args.target_ip} via tun0")
+    print("The operator must have spawned this exact machine. Esc pauses for guidance; Ctrl+C stops the trial.")
+    print("Tool permissions require your review unless --yes was selected. Flag reads require manual verification.")
+    forwarded = argparse.Namespace(suite="live", models=matches, categories=[], areas=[], tests=[],
+                                   timeout=args.timeout, failed=False, tools=args.tools,
+                                   max_turns=args.max_turns, live_platform=args.platform,
+                                   target_ip=args.target_ip, box_name=args.name,
+                                   auto_approve=getattr(args, "yes", False))
+    return run_benchmark(forwarded, [test])
+
+
+def run_benchmark(args: argparse.Namespace, tests_override: list[dict] | None = None) -> int:
+    global RESULTS
+    tests = tests_override if tests_override is not None else load_suite(args.suite)
     invalid_ids = [str(test.get("id", "")) for test in tests
                    if not re.fullmatch(r"[A-Za-z0-9._-]+", str(test.get("id", "")))]
     if invalid_ids:
@@ -293,15 +597,52 @@ def run_benchmark(args: argparse.Namespace) -> int:
     tests = select_tests(tests, args.categories or [], args.tests or [], args.areas or [])
     if not tests:
         raise SystemExit("no tests matched the selection")
+    policy = getattr(args, "tools", "suite")
+    try:
+        tests = [resolve_test_tools(test, policy) for test in tests]
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    for test in tests:
+        test["max_turns"] = getattr(args, "max_turns", None)
+        test["timeout"] = args.timeout
     available = list_models()
     models = resolve_models(args.models or [], available)
     if not models:
         raise SystemExit("no local models matched the selection")
 
+    base_results = ROOT / "results"
+    if args.failed:
+        RESULTS = latest_results()
+    else:
+        run_id = time.strftime("%Y%m%dT%H%M%S") + "-" + uuid.uuid4().hex[:8]
+        RESULTS = base_results / "runs" / run_id
+        RESULTS.mkdir(parents=True, mode=0o700 if getattr(args, "live_platform", None) else 0o777)
+        manifest = {"schema_version": 1, "run_id": run_id,
+                    "models": models, "tests": [test["id"] for test in tests],
+                    "tools": policy, "timeout": args.timeout,
+                    "max_turns": getattr(args, "max_turns", None),
+                    "status": "running"}
+        if getattr(args, "live_platform", None):
+            manifest["live_lab"] = {"platform": args.live_platform, "name": args.box_name,
+                                    "ip": args.target_ip,
+                                    "briefing": "self-contained", "route": getattr(args, "live_route", None),
+                                    "verification": "manual",
+                                    "visible_output": True, "steerable": True,
+                                    "auto_approve": getattr(args, "auto_approve", False)}
+        (RESULTS / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+        base_results.mkdir(parents=True, exist_ok=True)
+        (base_results / "latest-run.txt").write_text(run_id + "\n")
+    for model in models:
+        if Path(model).name != model or model in (".", ".."):
+            raise SystemExit(f"model name is not a safe result directory: {model!r}")
     print(f"MyCLI benchmark: {len(models)} model(s) × {len(tests)} test(s), timeout {args.timeout}s")
     binary = mycli_binary()
     env = os.environ.copy()
-    env.setdefault("MYCLI_RAW", "1")
+    if getattr(args, "live_platform", None):
+        env["MYCLI_RAW"] = "0"
+        env["MYCLI_FULL_TOOL_OUTPUT"] = "1"
+    else:
+        env.setdefault("MYCLI_RAW", "1")
     for model in models:
         print(f"\n━━━ {model} ━━━", flush=True)
         model_dir = RESULTS / model
@@ -309,34 +650,82 @@ def run_benchmark(args: argparse.Namespace) -> int:
             result_file = model_dir / f"{test['id']}.md"
             if args.failed and result_is_current(result_file, test) and not result_file.read_text(errors="replace").startswith("FAIL"):
                 continue
-            work = model_dir / "_work" / str(test["id"])
-            if work.exists():
-                shutil.rmtree(work)
-            work.mkdir(parents=True, exist_ok=True)
-            tier = str(test.get("tier", "simple"))
-            if tier == "advanced":
-                tier = "full"
-            command = [binary, "-m", model, "-p", str(test.get("persona", "code")),
-                       "-t", tier, "-C", str(work), "-y", str(test.get("prompt", ""))]
+            if args.failed and result_file.exists() and not result_is_current(result_file, test):
+                raise SystemExit("Cannot retry a result with changed task/settings; start a new run without --failed.")
+            live_trial = bool(getattr(args, "live_platform", None))
+            if live_trial:
+                work = create_live_workspace()
+                model_dir.mkdir(parents=True, exist_ok=True)
+                model_dir.chmod(0o700)
+                print(f"    workspace: {work}", flush=True)
+            else:
+                work = model_dir / "_work" / str(test["id"])
+                if work.exists():
+                    shutil.rmtree(work)
+                work.mkdir(parents=True, exist_ok=True)
+            trial_env = env.copy()
+            if live_trial:
+                trial_env = prepare_live_config(work, trial_env)
+                test["prompt"] += (f"\n\nRun workspace: {work}. Keep all generated files there. "
+                                   "Do not initialize a separate /tmp/htb workspace. "
+                                   "Run the installed recon helper from this working directory if you choose it.")
+            command = benchmark_command(binary, model, test, work, test["max_turns"],
+                                        auto_approve=not live_trial or getattr(args, "auto_approve", False))
             print(f"  {test['id']:<28}", end="", flush=True)
             started = time.monotonic()
+            stdout_path = model_dir / f"{test['id']}.stdout.log"
+            stderr_path = model_dir / f"{test['id']}.stderr.log"
             try:
-                completed = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                           text=True, env=env, timeout=args.timeout, check=False)
-                response = ANSI_RE.sub("", completed.stdout).strip()
-            except subprocess.TimeoutExpired as exc:
-                response = ANSI_RE.sub("", exc.stdout or "").strip() if isinstance(exc.stdout, str) else ""
-                completed = None
+                session_path = model_dir / f"{test['id']}.session.log" if live_trial else None
+                if live_trial:
+                    status, returncode = execute_live_pty(command, trial_env, args.timeout, session_path, work)
+                    with session_path.open("rb") as source:
+                        fd = os.open(stdout_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                        os.fchmod(fd, 0o600)
+                        with os.fdopen(fd, "wb") as dest:
+                            shutil.copyfileobj(source, dest)
+                    fd = os.open(stderr_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                    os.fchmod(fd, 0o600)
+                    os.close(fd)
+                else:
+                    status, returncode = execute_benchmark(command, trial_env, args.timeout,
+                                                           stdout_path, stderr_path)
+            except OSError as exc:
+                status, returncode = "infrastructure_error", None
+                stderr_path.write_text(str(exc), encoding="utf-8")
+            response = ANSI_RE.sub("", stdout_path.read_text(encoding="utf-8", errors="replace")).strip() if stdout_path.exists() else ""
             elapsed = round(time.monotonic() - started)
-            if response:
-                artifacts = sum(1 for path in work.rglob("*") if path.is_file())
-                write_result(model, test, response, elapsed, artifacts)
-                print(f"✓ {elapsed:3d}s {len(response.split()):5d} words {artifacts:2d} files")
+            artifacts = sum(1 for path in work.rglob("*") if path.is_file())
+            write_result(model, test, response, elapsed, artifacts)
+            if live_trial:
+                (model_dir / f"{test['id']}.raw").chmod(0o600)
+                result_file.chmod(0o600)
+            record = {"schema_version": 1, "model": model, "test": test["id"],
+                      "execution": status, "returncode": returncode,
+                      "outcome": "not_evaluated", "duration_seconds": elapsed,
+                      "tool_policy": policy, "requested_tier": test["tier"],
+                      "resolved_tier": test["tier"] if test["tier"] in ("simple", "medium", "full") else None,
+                      "fingerprint": test_fingerprint(test)}
+            if live_trial:
+                record["workspace"] = str(work)
+                record["session_log"] = f"{test['id']}.session.log"
+            record_path = model_dir / f"{test['id']}.json"
+            record_path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+            if live_trial:
+                record_path.chmod(0o600)
+            if status == "completed":
+                print(f"✓ completed {elapsed:3d}s {len(response.split()):5d} words {artifacts:2d} files (unverified)")
             else:
-                model_dir.mkdir(parents=True, exist_ok=True)
-                result_file.write_text("FAIL\n", encoding="utf-8")
-                reason = "timeout" if completed is None else f"exit {completed.returncode}"
-                print(f"✗ {reason}")
+                result_file.write_text("FAIL\n" + result_file.read_text(encoding="utf-8"), encoding="utf-8")
+                print(f"✗ {status} (exit {returncode})")
+            if status == "cancelled":
+                write_summary(models, tests)
+                return 130
+    manifest_path = RESULTS / "manifest.json"
+    if manifest_path.exists():
+        manifest = json.loads(manifest_path.read_text())
+        manifest["status"] = "finished"
+        manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
     summary = write_summary(models, tests)
     print(f"\nResults: {RESULTS}\nSummary: {summary}")
     return 0
@@ -745,7 +1134,7 @@ def grade_results(args: argparse.Namespace) -> int:
             raise SystemExit(f"grader '{args.provider}' is unavailable; configured: {', '.join(available)}")
         profile = profiles[args.provider]
     rubric = load_toml(PROMPTS / "grading.toml")["grader"]
-    root = Path(args.results).expanduser().resolve() if args.results else RESULTS
+    root = Path(args.results).expanduser().resolve() if args.results else latest_results()
     rows = []
     details = []
     model_dirs = [path for path in sorted(root.iterdir())
@@ -904,6 +1293,9 @@ def interactive_run() -> int:
     test_ids = picker("Select tests", [str(test["id"]) for test in narrowed], multiple=True)
     if not test_ids:
         return 0
+    tool_policy = picker("Tool policy (inherit uses saved settings, not live REPL state)", list(TOOL_POLICIES))
+    if not tool_policy:
+        return 0
     timeout_choice = picker("Per-test timeout", ["180 seconds", "120 seconds", "300 seconds", "60 seconds"])
     if not timeout_choice:
         return 0
@@ -915,11 +1307,45 @@ def interactive_run() -> int:
     if confirm != "Start benchmark":
         return 0
     args = argparse.Namespace(suite=suite, models=models, categories=[], areas=[], tests=test_ids,
-                              timeout=timeout, failed=False)
+                              timeout=timeout, failed=False, tools=tool_policy, max_turns=None)
     return run_benchmark(args)
 
 
+def interactive_live() -> int:
+    platform_label = picker("Live HTB machine OS (operator-spawned)", ["Linux", "Windows"])
+    if not platform_label:
+        return 0
+    platform = platform_label.lower()
+    model = picker("Select one local model", list_models())
+    if not model:
+        return 0
+    try:
+        target_ip = input("Current active HTB machine IP: ").strip()
+        name = input("Box name (optional; press Enter to skip): ").strip() or None
+    except (EOFError, KeyboardInterrupt):
+        return 0
+    tools = picker("Tool policy", ["full", "inherit", "auto"])
+    if not tools:
+        return 0
+    timeout = 3600
+    max_turns = 100
+    approval = picker("Tool permissions", ["Review each permission", "Auto-approve tools"] )
+    if not approval:
+        return 0
+    label = f" {name}" if name else ""
+    confirm = picker(f"Run {model} on {platform}{label} {target_ip}; Esc pauses, Ctrl+C stops",
+                     ["Start live task", "Cancel"])
+    if confirm != "Start live task":
+        return 0
+    return run_live(argparse.Namespace(platform=platform, target_ip=target_ip, name=name, model=model,
+                                       tools=tools,
+                                       timeout=timeout, max_turns=max_turns,
+                                       yes=approval.startswith("Auto-approve")))
+
+
 def interactive_grade() -> int:
+    global RESULTS
+    RESULTS = latest_results()
     profiles = sorted(cloud_profiles())
     codex_profile = codex_grader_config()
     ensure_codex_home(codex_profile)
@@ -957,9 +1383,11 @@ def run_refusal(extra: list[str] | None = None) -> int:
 
 
 def menu() -> int:
-    action = picker("MyCLI benchmark", ["Run benchmark", "Run refusal comparison", "Grade results", "List local models", "Exit"])
+    action = picker("MyCLI benchmark", ["Run benchmark", "Run live HTB task", "Run refusal comparison", "Grade results", "List local models", "Exit"])
     if action == "Run benchmark":
         return interactive_run()
+    if action == "Run live HTB task":
+        return interactive_live()
     if action == "Run refusal comparison":
         models = picker("Select local models", list_models(), multiple=True)
         return run_refusal(["--models", *models]) if models else 0
@@ -979,8 +1407,20 @@ def parser() -> argparse.ArgumentParser:
     run.add_argument("--categories", nargs="*", help="categories to include")
     run.add_argument("--areas", nargs="*", help="subject areas to include")
     run.add_argument("--tests", nargs="*", help="test ID globs")
-    run.add_argument("--timeout", type=int, default=int(os.environ.get("BENCH_TIMEOUT", "120")))
+    run.add_argument("--tools", choices=TOOL_POLICIES, default="suite",
+                     help="suite tiers (default), explicit tier, auto, or saved-config inheritance")
+    run.add_argument("--max-turns", type=positive_int, help="override the MyCLI agent turn limit")
+    run.add_argument("--timeout", type=positive_int, default=int(os.environ.get("BENCH_TIMEOUT", "120")))
     run.add_argument("--failed", action="store_true", help="only missing or failed results")
+    live = sub.add_parser("live", help="run one operator-spawned HTB machine task")
+    live.add_argument("--os", dest="platform", choices=("linux", "windows"), required=True)
+    live.add_argument("--ip", dest="target_ip", required=True)
+    live.add_argument("--name", help="optional box name for context only")
+    live.add_argument("--model", required=True)
+    live.add_argument("--tools", choices=("full", "auto", "inherit"), default="full")
+    live.add_argument("--timeout", type=positive_int, default=3600)
+    live.add_argument("--max-turns", type=positive_int, default=100)
+    live.add_argument("--yes", action="store_true", help="auto-approve tools; default reviews permissions interactively")
     grade = sub.add_parser("grade", help="grade saved results with a configured cloud model")
     grade.add_argument(
         "--provider",
@@ -1005,6 +1445,8 @@ def main() -> int:
         return menu()
     if args.command == "run":
         return run_benchmark(args)
+    if args.command == "live":
+        return run_live(args)
     if args.command == "grade":
         return grade_results(args)
     if args.command == "grade-menu":

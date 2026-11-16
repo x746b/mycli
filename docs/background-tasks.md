@@ -1,4 +1,4 @@
-# Background commands — MyCLI 2.1.0
+# Background commands — MyCLI 2.3.0
 
 On `/tools medium` or `/tools full`, the model can start a shell command and
 immediately continue other work. For example:
@@ -35,6 +35,29 @@ a new model turn or interrupt an ongoing response. The model reads results with
 `BackgroundOutput`; it should continue useful work between checks and verify the
 final status before claiming success. `/tasks` controls and model tools are
 available only in medium/full. The simple tier retains its original three tools.
+
+## Automatic Bash handoff (default in medium/full)
+
+Automatic handoff is enabled by default in `medium` and `full` tool tiers. Set
+`MYCLI_BASH_AUTO_BACKGROUND=0` before starting MyCLI to disable it for that
+process, including a live `/bench` trial. The `simple` tier keeps its existing
+Bash behavior regardless of this setting.
+
+A Bash command starts once under the background manager. If it finishes within
+60 seconds, Bash returns its normal output and exit status. If it is still
+running at 60 seconds, Bash returns a task ID and partial output while the
+*same process* continues. Use `BackgroundOutput` or `/tasks output <id>` to
+inspect it; `BackgroundStop` or `/tasks stop <id>` stops it. A handoff is not a
+successful result, and rerunning the command would duplicate its effects.
+
+The default total timeout is one hour. An explicitly supplied Bash timeout is
+still in milliseconds and capped at 600,000; a shorter timeout takes effect
+before the 60-second handoff. Cancellation before handoff kills the process
+group. At 300 seconds, a still-running job emits a one-time health notice with
+elapsed time and time since output. Its `BackgroundOutput` snapshot contains
+`health.running`, `health.long_running`, `health.elapsed_seconds`, and
+`health.seconds_since_output`. Silence is not classified as a hang and does not
+kill the job; inspect the process and its task-specific artifacts before deciding.
 
 ## Lifecycle
 

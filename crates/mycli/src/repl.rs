@@ -674,6 +674,9 @@ fn build_system_prompt(config: &Config, prompts: &crate::prompts::Prompts, model
     prompt.push_str(&crate::memory::prompt(window, config.max_tokens));
     if matches!(tier, "medium" | "full") {
         prompt.push_str("\n# Background commands\nUse BackgroundStart for a long noninteractive command when independent work can continue. Keep its task ID and use BackgroundOutput to check progress and actual exit status before reporting success. Use BackgroundList to recover IDs and BackgroundStop to terminate work. Avoid tight polling. These are shell jobs, not agents; they stop on CLI exit, session switch, or switching to simple tools. Foreground turn cancellation does not stop them.\n");
+        if auto_background_bash_enabled() {
+            prompt.push_str("Bash auto-background is enabled: commands run once, return normal results within 60 seconds, or hand off the same process with a task ID and partial output. Follow up with BackgroundOutput or BackgroundStop; never rerun merely because of handoff. Cancellation before handoff stops the command. Default total timeout is 1 hour; an explicit Bash timeout (capped at 600000ms) includes foreground and background time, and a shorter timeout is respected before handoff. BackgroundOutput exposes health including running status and time since output, with long_running flagged after 300 seconds. Silence alone does not prove a hang.\n");
+        }
     }
 
     if has_search {
@@ -721,6 +724,23 @@ fn build_system_prompt(config: &Config, prompts: &crate::prompts::Prompts, model
     prompt
 }
 
+/// Enabled by default; the environment may disable it for this process.
+fn auto_background_setting_enabled(value: Option<&str>) -> bool {
+    !matches!(value.map(str::trim), Some("0" | "false" | "off" | "no"))
+}
+
+fn auto_background_bash_enabled() -> bool {
+    auto_background_setting_enabled(std::env::var("MYCLI_BASH_AUTO_BACKGROUND").ok().as_deref())
+}
+
+fn bash_tool(tier: &str, opt_in: bool) -> Box<dyn cersei_tools::Tool> {
+    if opt_in && matches!(tier, "medium" | "full") {
+        Box::new(crate::background::AutoBackgroundBash)
+    } else {
+        Box::new(cersei_tools::bash::BashTool)
+    }
+}
+
 /// Build tools based on tier: simple, medium, or full.
 fn build_tools(tier: &str, working_dir: &std::path::Path, skills: &crate::skills::Skills) -> Vec<Box<dyn cersei_tools::Tool>> {
     let mut tools: Vec<Box<dyn cersei_tools::Tool>> = Vec::new();
@@ -728,7 +748,7 @@ fn build_tools(tier: &str, working_dir: &std::path::Path, skills: &crate::skills
     // Simple: Read, Write, Bash — minimal surface for small models
     tools.push(Box::new(cersei_tools::file_read::FileReadTool));
     tools.push(Box::new(cersei_tools::file_write::FileWriteTool));
-    tools.push(Box::new(cersei_tools::bash::BashTool));
+    tools.push(bash_tool(tier, auto_background_bash_enabled()));
 
     if tier == "simple" {
         return tools;
@@ -747,13 +767,16 @@ fn build_tools(tier: &str, working_dir: &std::path::Path, skills: &crate::skills
         return tools;
     }
 
-    // Full: + WebFetch, Skills — for capable cloud models
+    // Full: + WebFetch, Skills — for capable cloud models. Live benchmark
+    // tasks use self-contained briefings and exclude workflow skill loading.
     tools.push(Box::new(cersei_tools::web_fetch::WebFetchTool));
-    tools.push(Box::new(
-        cersei_tools::skill_tool::SkillTool::new()
-            .with_project_root(working_dir)
-            .with_registry(skills.registry.clone()),
-    ));
+    if std::env::var_os("MYCLI_BENCH_DISABLE_SKILLS").as_deref() != Some(std::ffi::OsStr::new("1")) {
+        tools.push(Box::new(
+            cersei_tools::skill_tool::SkillTool::new()
+                .with_project_root(working_dir)
+                .with_registry(skills.registry.clone()),
+        ));
+    }
 
     tools
 }
@@ -1897,12 +1920,39 @@ pub async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
         renderer.pause_flag = Some(&PERMISSION_ACTIVE);
         renderer.decision_seq = Some(&PERMISSION_SEQ);
         renderer.tool_start_seq = Some(&TOOL_START_SEQ);
-        running.store(true, Ordering::Relaxed);
-        let turn_cancel = arm_turn_cancel();
-        agent.set_cancel_token(turn_cancel.clone());
-        let result = run_prompt(&agent, prompt, &mut renderer, true, &turn_cancel).await;
-        running.store(false, Ordering::Relaxed);
-        return result;
+        let steerable = std::env::var_os("MYCLI_BENCH_STEERABLE").as_deref()
+            == Some(std::ffi::OsStr::new("1"));
+        let mut next_prompt = prompt.to_string();
+        let mut is_first = true;
+        loop {
+            running.store(true, Ordering::Relaxed);
+            let turn_cancel = arm_turn_cancel();
+            agent.set_cancel_token(turn_cancel.clone());
+            let result = run_prompt(&agent, &next_prompt, &mut renderer, is_first, &turn_cancel).await;
+            running.store(false, Ordering::Relaxed);
+            session.sync(&agent, &config, &current_model)?;
+            if !steerable || result.is_err() || !turn_cancel.is_cancelled() {
+                return result;
+            }
+            is_first = false;
+            // KeyWatcher has stopped and restored canonical input by this point.
+            // Clear any typing captured before Esc so it cannot become a later
+            // instruction without the operator deliberately submitting it.
+            let _ = keys::take_typeahead();
+            eprintln!("\n  Turn paused for steering. Foreground work was interrupted; tracked background tasks continue.");
+            eprintln!("  Enter guidance and press Enter; empty Enter resumes. Ctrl+C stops the trial.");
+            eprint!("  steer> ");
+            io::stderr().flush()?;
+            let mut guidance = String::new();
+            if io::stdin().read_line(&mut guidance)? == 0 {
+                return Ok(());
+            }
+            next_prompt = if guidance.trim().is_empty() {
+                "Continue from the current evidence and report progress.".to_string()
+            } else {
+                format!("Operator steering for the current task: {}", guidance.trim())
+            };
+        }
     }
 
     // REPL mode
@@ -2380,6 +2430,29 @@ mod balance_tests {
     }
 
     #[test]
+    fn bash_auto_background_defaults_on_and_respects_disabled_setting() {
+        use cersei_tools::Tool;
+        assert!(auto_background_setting_enabled(None));
+        assert!(auto_background_setting_enabled(Some("1")));
+        for disabled in ["0", "false", "off", "no"] {
+            assert!(!auto_background_setting_enabled(Some(disabled)));
+        }
+        for tier in ["simple", "medium", "full", "invalid"] {
+            for opt_in in [false, true] {
+                let tool = bash_tool(tier, opt_in);
+                assert_eq!(tool.name(), "Bash");
+                assert_eq!(tool.permission_level(), PermissionLevel::Execute);
+                if opt_in && matches!(tier, "medium" | "full") {
+                    assert!(tool.description().contains("60 seconds"));
+                } else {
+                    assert_eq!(tool.description(), cersei_tools::bash::BashTool.description());
+                    assert_eq!(tool.input_schema(), cersei_tools::bash::BashTool.input_schema());
+                }
+            }
+        }
+    }
+
+    #[test]
     fn background_tools_are_only_registered_for_medium_and_full() {
         let root = tempfile::tempdir().unwrap();
         let skills = crate::skills::Skills {
@@ -2396,6 +2469,21 @@ mod balance_tests {
                 assert_eq!(start.permission_level(), PermissionLevel::Execute);
             }
         }
+    }
+
+    #[test]
+    fn live_benchmark_disables_skill_tool() {
+        let root = tempfile::tempdir().unwrap();
+        let skills = crate::skills::Skills {
+            registry: Arc::new(parking_lot::RwLock::new(cersei_tools::skills::registry::Registry::new(Vec::new(), root.path(), &[]))),
+            source: "test".into(), paths: Vec::new(),
+        };
+        std::env::set_var("MYCLI_BENCH_DISABLE_SKILLS", "1");
+        let names: Vec<String> = build_tools("full", root.path(), &skills)
+            .iter().map(|tool| tool.name().to_string()).collect();
+        std::env::remove_var("MYCLI_BENCH_DISABLE_SKILLS");
+        assert!(names.iter().any(|name| name == "WebFetch"));
+        assert!(!names.iter().any(|name| name == "Skill"));
     }
 
     #[test]
