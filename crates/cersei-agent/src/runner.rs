@@ -5,11 +5,230 @@ use crate::{Agent, AgentOutput, ToolCallRecord};
 use cersei_hooks::{HookAction, HookContext, HookEvent};
 use cersei_provider::{CompletionRequest, StreamAccumulator};
 use cersei_tools::permissions::{PermissionDecision, PermissionRequest};
-use cersei_tools::{ToolContext, ToolResult};
+use cersei_tools::{Tool, ToolContext, ToolResult};
 use cersei_types::*;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::mpsc;
+
+// ─── Tool name resolution ────────────────────────────────────────────────────
+
+/// Some local models (e.g. flint) emit tool names in a different case than
+/// advertised (`bash` for `Bash`). Rewrite a call to the advertised name when
+/// exactly one tool matches case-insensitively, so history, permissions,
+/// rendering and dispatch all see the real tool name.
+fn resolve_tool_name<'a>(names: impl IntoIterator<Item = &'a str>, requested: &str) -> Option<&'a str> {
+    let mut found = None;
+    for name in names {
+        if name == requested {
+            return None;
+        }
+        if name.eq_ignore_ascii_case(requested) {
+            if found.is_some() {
+                return None;
+            }
+            found = Some(name);
+        }
+    }
+    found
+}
+
+/// Argument names local models use instead of the advertised ones: flint
+/// sends `path` for `file_path` and `old_str`/`new_str` (the common
+/// str_replace editor names) for Edit's `old_string`/`new_string`.
+const ARG_ALIASES: [(&str, &[&str]); 3] = [
+    ("file_path", &["path", "filePath"]),
+    ("old_string", &["old_str"]),
+    ("new_string", &["new_str"]),
+];
+
+/// Rename an alias to its canonical argument only when the tool's schema
+/// defines the canonical name but not the alias, the canonical name is absent,
+/// and exactly one alias is present. Tools with a real `path` parameter
+/// (Glob, Grep) are therefore untouched.
+fn canonicalize_arg_names(schema: &serde_json::Value, input: &mut serde_json::Value) {
+    let Some(props) = schema.get("properties").and_then(|p| p.as_object()) else { return };
+    let Some(fields) = input.as_object_mut() else { return };
+    for (canonical, aliases) in ARG_ALIASES {
+        if !props.contains_key(canonical) || fields.contains_key(canonical) {
+            continue;
+        }
+        let present: Vec<&str> = aliases
+            .iter()
+            .copied()
+            .filter(|a| !props.contains_key(*a) && fields.get(*a).is_some_and(|v| v.is_string()))
+            .collect();
+        if let [alias] = present[..] {
+            if let Some(value) = fields.remove(alias) {
+                fields.insert(canonical.into(), value);
+            }
+        }
+    }
+}
+
+/// Convert string scalars to the type the schema declares (`"30000"` for an
+/// integer `timeout`). Parsers that miss the schema, e.g. because the model
+/// used a different tool-name case, hand every XML argument over as a string.
+/// Only exact, lossless parses are converted; anything else is left for the
+/// tool to reject.
+fn coerce_scalar_types(schema: &serde_json::Value, input: &mut serde_json::Value) {
+    let Some(props) = schema.get("properties").and_then(|p| p.as_object()) else { return };
+    let Some(fields) = input.as_object_mut() else { return };
+    for (key, value) in fields.iter_mut() {
+        let Some(text) = value.as_str() else { continue };
+        let text = text.trim();
+        let ty = props.get(key).and_then(|p| p.get("type")).and_then(|t| t.as_str());
+        let coerced = match ty {
+            Some("integer") => text.parse::<i64>().ok().map(serde_json::Value::from),
+            Some("number") => text
+                .parse::<f64>()
+                .ok()
+                .filter(|n| n.is_finite())
+                .and_then(serde_json::Number::from_f64)
+                .map(serde_json::Value::Number),
+            Some("boolean") => match text {
+                "true" | "True" => Some(serde_json::Value::Bool(true)),
+                "false" | "False" => Some(serde_json::Value::Bool(false)),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some(coerced) = coerced {
+            *value = coerced;
+        }
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn coerces_string_scalars_to_declared_types_only() {
+    use serde_json::json;
+    let schema = json!({"properties": {
+        "command": {"type": "string"},
+        "timeout": {"type": "integer"},
+        "ratio": {"type": "number"},
+        "replace_all": {"type": "boolean"},
+    }});
+    let mut input = json!({"command": "123", "timeout": "30000", "ratio": "0.5", "replace_all": "False"});
+    coerce_scalar_types(&schema, &mut input);
+    assert_eq!(input, json!({"command": "123", "timeout": 30000, "ratio": 0.5, "replace_all": false}));
+
+    // Unparseable or undeclared values are left alone for the tool to reject.
+    let mut input = json!({"timeout": "soon", "replace_all": "yes", "extra": "1"});
+    coerce_scalar_types(&schema, &mut input);
+    assert_eq!(input, json!({"timeout": "soon", "replace_all": "yes", "extra": "1"}));
+}
+
+/// Fix common local-model slips in tool calls before anything sees them.
+fn canonicalize_tool_calls(message: &mut Message, tools: &[Box<dyn Tool>]) {
+    let MessageContent::Blocks(blocks) = &mut message.content else { return };
+    for block in blocks {
+        if let ContentBlock::ToolUse { name, input, .. } = block {
+            if let Some(canonical) = resolve_tool_name(tools.iter().map(|t| t.name()), name) {
+                *name = canonical.to_string();
+            }
+            if let Some(tool) = tools.iter().find(|t| t.name() == name.as_str()) {
+                let schema = tool.input_schema();
+                canonicalize_arg_names(&schema, input);
+                coerce_scalar_types(&schema, input);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn renames_arg_aliases_only_when_schema_lacks_them() {
+    use serde_json::json;
+    let edit = json!({"properties": {"file_path": {}, "old_string": {}, "new_string": {}}});
+    let mut input = json!({"path": "a.txt", "old_str": "x", "new_str": "y"});
+    canonicalize_arg_names(&edit, &mut input);
+    assert_eq!(input, json!({"file_path": "a.txt", "old_string": "x", "new_string": "y"}));
+
+    let mut input = json!({"filePath": "a.txt", "old_string": "x", "new_str": "y"});
+    canonicalize_arg_names(&edit, &mut input);
+    assert_eq!(input, json!({"file_path": "a.txt", "old_string": "x", "new_string": "y"}));
+
+    // The canonical name wins; nothing is touched.
+    let mut input = json!({"file_path": "a", "path": "b"});
+    canonicalize_arg_names(&edit, &mut input);
+    assert_eq!(input, json!({"file_path": "a", "path": "b"}));
+
+    // Ambiguous aliases are left for the tool to reject.
+    let mut input = json!({"path": "a", "filePath": "b"});
+    canonicalize_arg_names(&edit, &mut input);
+    assert_eq!(input, json!({"path": "a", "filePath": "b"}));
+
+    // Glob/Grep have a real `path` parameter and no file_path.
+    let glob = json!({"properties": {"pattern": {}, "path": {}}});
+    let mut input = json!({"pattern": "*", "path": "src"});
+    canonicalize_arg_names(&glob, &mut input);
+    assert_eq!(input, json!({"pattern": "*", "path": "src"}));
+}
+
+#[cfg(test)]
+#[test]
+fn resolves_tool_names_case_insensitively_only_when_unambiguous() {
+    let names = ["Bash", "Read", "Glob"];
+    assert_eq!(resolve_tool_name(names, "bash"), Some("Bash"));
+    assert_eq!(resolve_tool_name(names, "GLOB"), Some("Glob"));
+    assert_eq!(resolve_tool_name(names, "Bash"), None);
+    assert_eq!(resolve_tool_name(names, "write"), None);
+    assert_eq!(resolve_tool_name(["Foo", "foo"], "FOO"), None);
+    assert_eq!(resolve_tool_name(["Foo", "foo"], "foo"), None);
+}
+
+/// Spell out the expected and received argument names after a validation
+/// error. Bare serde messages ("missing field `new_string`") leave local models
+/// guessing at escaping or format problems instead of fixing the call.
+fn input_hint(tool_name: &str, schema: &serde_json::Value, input: &serde_json::Value) -> String {
+    let required: Vec<&str> = schema
+        .get("required")
+        .and_then(|r| r.as_array())
+        .map(|r| r.iter().filter_map(|v| v.as_str()).collect())
+        .unwrap_or_default();
+    let expected: Vec<String> = schema
+        .get("properties")
+        .and_then(|p| p.as_object())
+        .map(|p| {
+            p.keys()
+                .map(|k| if required.contains(&k.as_str()) { format!("{k} (required)") } else { k.clone() })
+                .collect()
+        })
+        .unwrap_or_default();
+    let sent: Vec<&str> = input
+        .as_object()
+        .map(|o| o.keys().map(String::as_str).collect())
+        .unwrap_or_default();
+    let missing: Vec<&str> = required.iter().copied().filter(|k| !sent.contains(k)).collect();
+    let mut hint = format!(
+        "\n{tool_name} takes these top-level arguments: {}.\nYou sent: {}.",
+        expected.join(", "),
+        if sent.is_empty() { "nothing".to_string() } else { sent.join(", ") },
+    );
+    if !missing.is_empty() {
+        hint.push_str(&format!(" Missing: {}.", missing.join(", ")));
+    }
+    hint.push_str(" Retry with every required argument in one call.");
+    hint
+}
+
+#[cfg(test)]
+#[test]
+fn input_hint_lists_expected_sent_and_missing() {
+    use serde_json::json;
+    let schema = json!({
+        "properties": {"file_path": {}, "old_string": {}, "new_string": {}, "replace_all": {}},
+        "required": ["file_path", "old_string", "new_string"],
+    });
+    let hint = input_hint("Edit", &schema, &json!({"edits": []}));
+    assert!(hint.contains("file_path (required)"));
+    assert!(hint.contains("replace_all"));
+    assert!(hint.contains("You sent: edits."));
+    assert!(hint.contains("Missing: file_path, old_string, new_string."));
+    let hint = input_hint("Edit", &schema, &json!({"file_path": "a", "old_string": "x"}));
+    assert!(hint.contains("Missing: new_string."));
+}
 
 // ─── Tool result budget ──────────────────────────────────────────────────────
 
@@ -304,7 +523,8 @@ async fn run_agent_streaming_inner(
         }
 
         // Convert accumulated response
-        let response = accumulator.into_response()?;
+        let mut response = accumulator.into_response()?;
+        canonicalize_tool_calls(&mut response.message, &agent.tools);
         last_stop_reason = response.stop_reason.clone();
         _last_usage = response.usage.clone();
 
@@ -454,6 +674,11 @@ async fn run_agent_streaming_inner(
                     };
 
                     let mut result = result;
+                    if result.is_error && result.content.starts_with("Invalid input:") {
+                        if let Some(tool) = agent.tools.iter().find(|t| t.name() == tool_name) {
+                            result.content.push_str(&input_hint(&tool_name, &tool.input_schema(), &tool_input));
+                        }
+                    }
                     // Preserve large non-Bash output for the human viewer before
                     // applying the independent model excerpt budget.
                     if result.content.len() > cersei_tools::output::MODEL_OUTPUT_BYTES

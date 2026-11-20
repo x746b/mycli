@@ -12,7 +12,7 @@ $ mycli
  | | | | | | |_| | |____| |____| |
  |_| |_| |_|\__, |\_____|______|_|
              __/ |
-            |___/           v2.3.1
+            |___/           v2.3.5
 
   tools [medium]: Read, Write, Bash, Edit, Glob, Grep, BackgroundStart, BackgroundList, BackgroundOutput, BackgroundStop, WebSearch
   Session: Untitled session (891086a4-eb38-4b43-8270-0a142919db7a)
